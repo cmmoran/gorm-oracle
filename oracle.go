@@ -360,7 +360,7 @@ func (d Dialector) RewriteLimit11(c clause.Clause, builder clause.Builder) {
 	}
 
 	if hasLimit && hasOffset {
-		// 使用 ROW_NUMBER() 和子查询实现分页查询
+		// Implementing pagination queries using ROW_NUMBER() and subqueries
 		if d.RowNumberAliasForOracle11 == "" {
 			d.RowNumberAliasForOracle11 = "ROW_NUM"
 		}
