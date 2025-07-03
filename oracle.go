@@ -525,6 +525,9 @@ func (d Dialector) DataTypeOf(field *schema.Field) string {
 	if field.FieldType == reflect.TypeOf(uuid.UUID{}) {
 		return "RAW(16)"
 	}
+	if strings.EqualFold("timestamp without time zone", string(field.DataType)) {
+		return "TIMESTAMP(6)"
+	}
 	var sqlType string
 	switch field.DataType {
 	case schema.Bool:
