@@ -1,18 +1,20 @@
 package oracle
 
 import (
-	"reflect"
-	"sort"
-
+	"fmt"
+	go_ora "github.com/sijms/go-ora/v2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/schema"
 	"gorm.io/gorm/utils"
+	"reflect"
+	"sort"
+	"time"
 )
 
 func Update(config *callbacks.Config) func(db *gorm.DB) {
-	supportReturning := utils.Contains(config.UpdateClauses, "RETURNING")
+	_ = utils.Contains(config.UpdateClauses, "RETURNING")
 
 	return func(db *gorm.DB) {
 		if db.Error != nil {
@@ -43,31 +45,156 @@ func Update(config *callbacks.Config) func(db *gorm.DB) {
 			}
 
 			stmt.Build(stmt.BuildClauses...)
+			bindOracleReturning(stmt)
 		}
 
 		checkMissingWhereConditions(db)
 
 		if !db.DryRun && db.Error == nil {
-			for i, val := range stmt.Vars {
-				// HACK: replace values one by one, assuming its value layout will be the same all the time, i.e. aligned
-				stmt.Vars[i] = convertValue(val)
-			}
-			if ok, mode := hasReturning(db, supportReturning); ok {
-				if rows, err := stmt.ConnPool.QueryContext(stmt.Context, stmt.SQL.String(), stmt.Vars...); db.AddError(err) == nil {
-					dest := stmt.Dest
-					stmt.Dest = stmt.ReflectValue.Addr().Interface()
-					gorm.Scan(rows, db, mode)
-					stmt.Dest = dest
-					_ = db.AddError(rows.Close())
-				}
-			} else {
-				result, err := stmt.ConnPool.ExecContext(stmt.Context, stmt.SQL.String(), stmt.Vars...)
+			result, err := stmt.ConnPool.ExecContext(stmt.Context, stmt.SQL.String(), stmt.Vars...)
 
-				if db.AddError(err) == nil {
-					db.RowsAffected, _ = result.RowsAffected()
-				}
+			if db.AddError(err) == nil {
+				db.RowsAffected, _ = result.RowsAffected()
 			}
 		}
+	}
+}
+
+var skipTypes = map[reflect.Type]struct{}{
+	reflect.TypeOf((*time.Time)(nil)): {},
+}
+
+func instantiateNilPointers(v reflect.Value) {
+	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			// Don't preallocate root pointer here — expect caller to pass a pointer-to-struct
+			return
+		}
+		v = v.Elem()
+	}
+
+	if v.Kind() != reflect.Struct {
+		return
+	}
+
+	typ := v.Type()
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Field(i)
+		fieldType := typ.Field(i)
+
+		// Skip unexported fields
+		if fieldType.PkgPath != "" {
+			continue
+		}
+
+		switch field.Kind() {
+		case reflect.Ptr:
+			// Skip certain types
+			if _, skip := skipTypes[field.Type()]; skip {
+				continue
+			}
+			if field.IsNil() {
+				// Instantiate pointer
+				field.Set(reflect.New(field.Type().Elem()))
+			}
+			// Recurse
+			instantiateNilPointers(field)
+
+		case reflect.Struct:
+			instantiateNilPointers(field)
+		default:
+		}
+	}
+}
+
+func bindOracleReturning(stmt *gorm.Statement) {
+	// Locate the RETURNING clause
+	ret, ok := stmt.Clauses[clause.Returning{}.Name()]
+	if !ok {
+		return
+	}
+	cols := ret.Expression.(clause.Returning).Columns
+	_, _ = stmt.WriteString(" INTO ")
+
+	// Determine the struct root for binding
+	var rv reflect.Value
+	if !stmt.ReflectValue.IsValid() && stmt.Model != nil {
+		rv = reflect.ValueOf(stmt.Model)
+		for rv.Kind() == reflect.Ptr {
+			rv = rv.Elem()
+		}
+	} else {
+		rv = stmt.ReflectValue
+		instantiateNilPointers(rv)
+		for rv.Kind() == reflect.Ptr {
+			rv = rv.Elem()
+		}
+	}
+	if len(cols) == 0 {
+		for _, f := range stmt.Schema.Fields {
+			cols = append(cols, clause.Column{Name: f.DBName})
+		}
+	}
+
+	// Append an OUT bind for each column
+	for i, col := range cols {
+		// Match column to schema field
+		var sf *schema.Field
+		for _, f := range stmt.Schema.Fields {
+			name := stmt.DB.NamingStrategy.ColumnName("", col.Name)
+			if f.DBName == name {
+				sf = f
+				break
+			}
+		}
+		// Determine destination pointer
+		var (
+			destPtr interface{}
+			size    int
+		)
+		if sf != nil {
+			field := rv.FieldByName(sf.Name)
+
+			var refVal reflect.Value
+			refVal = sf.ReflectValueOf(stmt.Context, rv)
+			if refVal.IsValid() && refVal.CanAddr() {
+				destPtr = refVal.Addr().Interface()
+			} else {
+				destPtr = field.Interface()
+			}
+			if field.Kind() == reflect.Ptr {
+				field = field.Elem()
+			}
+
+			switch field.Kind() {
+			case reflect.Bool:
+				if sf.Size == 0 {
+					size = 64
+				} else {
+					size = sf.Size
+				}
+			case reflect.String:
+				if sf.Size == 0 {
+					size = 4000
+				} else {
+					size = sf.Size
+				}
+			default:
+				size = sf.Size
+			}
+		} else {
+			var tmp interface{}
+			destPtr = &tmp
+		}
+		if i > 0 {
+			_, _ = stmt.WriteString(", ")
+		}
+		stmt.AddVar(stmt, go_ora.Out{
+			Dest: destPtr,
+			Size: size,
+			In:   true,
+		})
+		_, _ = stmt.WriteString(fmt.Sprintf("/*- %s -*/", col.Name))
 	}
 }
 
@@ -85,19 +212,6 @@ func checkMissingWhereConditions(db *gorm.DB) {
 		}
 		return
 	}
-}
-
-func hasReturning(tx *gorm.DB, supportReturning bool) (bool, gorm.ScanMode) {
-	if supportReturning {
-		if c, ok := tx.Statement.Clauses["RETURNING"]; ok {
-			returning, _ := c.Expression.(clause.Returning)
-			if len(returning.Columns) == 0 || (len(returning.Columns) == 1 && returning.Columns[0].Name == "*") {
-				return true, 0
-			}
-			return true, gorm.ScanUpdate
-		}
-	}
-	return false, 0
 }
 
 // ConvertToAssignments convert to update assignments

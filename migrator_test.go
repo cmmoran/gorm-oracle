@@ -115,8 +115,9 @@ type TestTableUser struct {
 
 	UserType int `gorm:"column:user_type;size:8;comment:User Type" json:"userType"`
 
-	Enabled bool   `gorm:"column:enabled;comment:Is Enabled" json:"enabled"`
-	Remark  string `gorm:"column:remark;size:1024;comment:Remark" json:"remark"`
+	Enabled  bool   `gorm:"column:enabled;comment:Is Enabled" json:"enabled"`
+	PEnabled *bool  `gorm:"column:penabled;comment:Is penabled" json:"penabled"`
+	Remark   string `gorm:"column:remark;size:1024;comment:Remark" json:"remark"`
 }
 
 func (TestTableUser) TableName() string {

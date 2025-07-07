@@ -1,8 +1,10 @@
 package oracle
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"gorm.io/gorm/clause"
 	"log"
 	"os"
 	"reflect"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
@@ -136,6 +139,112 @@ func TestCountLimit0(t *testing.T) {
 	}); strings.Contains(countSql, "ORDER BY") {
 		t.Error(`The "count(*)" statement contains the "ORDER BY" clause!`)
 	}
+}
+
+func TestReturning(t *testing.T) {
+	db, err := dbNamingCase, dbErrors[0]
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+	ctx := func() context.Context {
+		return context.Background()
+	}
+
+	err = db.AutoMigrate(TestTableUser{})
+	assert.NoError(t, err, "expecting no error")
+	model := TestTableUser{
+		UID:         "U1",
+		Name:        "Lisa",
+		Account:     "lisa",
+		Password:    "H6aLDNr",
+		PhoneNumber: "+8616666666666",
+		Sex:         "0",
+		UserType:    1,
+		Birthday:    ptr(time.Date(1978, 5, 1, 0, 0, 0, 0, time.UTC).UTC()),
+		Enabled:     true,
+	}
+	res := db.WithContext(ctx()).Create(&model)
+	assert.NoError(t, err, "expecting no error")
+	modelId := model.ID
+	res = db.WithContext(ctx()).First(&model)
+	assert.NoError(t, err, "expecting no error")
+	assert.Equal(t, modelId, model.ID)
+	model.Name = "Bob"
+	model.Sex = "m"
+	model.Enabled = true
+	model.PEnabled = ptr(true)
+	res = db.WithContext(ctx()).Updates(model)
+	assert.NoError(t, res.Error, "expecting no error")
+	assert.Equal(t, "Bob", model.Name, "expecting 'Bob'")
+	assert.Equal(t, "m", model.Sex, "expecting 'm'")
+	assert.Equal(t, true, model.Enabled, "expecting 'true'")
+	assert.Equal(t, ptr(true), model.PEnabled, "expecting '*true'")
+
+	res = db.WithContext(ctx()).Model(&model).Update("name", "Alice").Update("sex", "f").Update("enabled", false)
+	assert.NoError(t, res.Error, "expecting no error")
+	assert.Equal(t, modelId, model.ID)
+	assert.Equal(t, "Alice", model.Name)
+	assert.Equal(t, "f", model.Sex, "expecting 'f'")
+
+	res = db.WithContext(ctx()).Model(&model).Updates(map[string]any{
+		"name": "Bob",
+		"sex":  "b",
+	})
+	assert.NoError(t, res.Error, "expecting no error")
+	assert.Equal(t, "Bob", model.Name)
+	assert.Equal(t, modelId, model.ID)
+	assert.Equal(t, "b", model.Sex, "expecting 'b'")
+
+	model.PEnabled = ptr(false)
+	res = db.WithContext(ctx()).Model(&model).Clauses(clause.Returning{}).Updates(map[string]any{
+		"name":      "charlie",
+		"sex":       "m",
+		"enabled":   true,
+		"penabled":  ptr(true),
+		"user_type": gorm.Expr("\"user_type\" + 1"),
+	})
+	assert.NoError(t, res.Error, "expecting no error")
+	assert.Equal(t, modelId, model.ID)
+	assert.Equal(t, "charlie", model.Name, "expecting 'charlie'")
+	assert.Equal(t, "m", model.Sex, "expecting 'm'")
+	assert.Equal(t, true, model.Enabled, "expecting 'true'")
+	assert.Equal(t, ptr(true), model.PEnabled, "expecting '*true'")
+
+	tm := &TestTableUser{
+		ID:   modelId,
+		Name: "doug",
+	}
+	res = db.WithContext(ctx()).Clauses(clause.Returning{}).Updates(tm)
+	assert.NoError(t, res.Error, "expecting no error")
+	assert.Equal(t, modelId, model.ID)
+	assert.Equal(t, "doug", tm.Name, "expecting 'doug'")
+	assert.Equal(t, "m", tm.Sex, "expecting 'm'")
+	assert.Equal(t, true, tm.Enabled, "expecting 'true'")
+	assert.Equal(t, 2, tm.UserType, "expecting '2'")
+	assert.Equal(t, "1978-05-01 00:00:00", tm.Birthday.Format("2006-01-02 15:04:05"), "expecting '1978-05-01 00:00:00'")
+	assert.Equal(t, true, *tm.PEnabled, "expecting '(*bool)true'")
+
+	ttm := &TestTableUser{
+		ID:   modelId,
+		Name: "evan",
+	}
+	res = db.WithContext(ctx()).Updates(ttm)
+	assert.NoError(t, res.Error, "expecting no error")
+	assert.Equal(t, modelId, model.ID)
+	assert.Equal(t, "evan", ttm.Name, "expecting 'evan'")
+	assert.Equal(t, "", ttm.Sex, "expecting ''")
+	assert.Equal(t, false, ttm.Enabled, "expecting 'false'")
+	assert.Equal(t, 0, ttm.UserType, "expecting '0'")
+	assert.Nil(t, ttm.Birthday, "expecting '(*time.Time)nil'")
+	assert.Nil(t, ttm.PEnabled, "expecting '(*bool)nil'")
+}
+
+func ptr[T any](v T) *T {
+	return &v
 }
 
 func TestLimit(t *testing.T) {
@@ -317,8 +426,8 @@ func TestVarcharSizeIsCharLength(t *testing.T) {
 		args    args
 		wantErr bool
 	}{
-		{"50", args{strings.Repeat("Name", 25)}, false},
-		{"60", args{strings.Repeat("Name", 30)}, true},
+		{"50", args{strings.Repeat("Nm", 25)}, false},
+		{"60", args{strings.Repeat("Nm", 30)}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

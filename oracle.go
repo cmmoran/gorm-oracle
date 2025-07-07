@@ -281,7 +281,32 @@ func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuil
 					builder.WriteQuoted(column)
 				}
 			} else {
-				_ = builder.WriteByte('*')
+				stmt, _ := builder.(*gorm.Statement)
+
+				returningClause := stmt.Clauses["RETURNING"]
+				returningExpression := returningClause.Expression.(clause.Returning)
+				if stmt.Schema != nil && len(stmt.Schema.Fields) > 0 {
+					for idx, f := range stmt.Schema.Fields {
+						if idx > 0 {
+							_ = builder.WriteByte(',')
+						}
+
+						builder.WriteQuoted(f.DBName)
+						returningExpression.Columns = append(returningExpression.Columns, clause.Column{Name: f.DBName})
+					}
+
+				} else if set, sok := stmt.Clauses["SET"]; sok {
+					for idx, asn := range set.Expression.(clause.Set) {
+						if idx > 0 {
+							_ = builder.WriteByte(',')
+						}
+
+						builder.WriteQuoted(asn.Column.Name)
+						returningExpression.Columns = append(returningExpression.Columns, asn.Column)
+					}
+				}
+				returningClause.Expression = returningExpression
+				stmt.Clauses["RETURNING"] = returningClause
 			}
 		}
 	}
@@ -520,18 +545,20 @@ func (d Dialector) Explain(sql string, vars ...interface{}) string {
 
 func (d Dialector) DataTypeOf(field *schema.Field) string {
 	delete(field.TagSettings, "RESTRICT")
+	booleanType := "NUMBER(1)"
+	if dbVer, _ := strconv.Atoi(strings.Split(d.DBVer, ".")[0]); dbVer >= 23 {
+		booleanType = "BOOLEAN"
+	}
 
 	// Handle google/uuid.UUID as RAW(16)
 	if field.FieldType == reflect.TypeOf(uuid.UUID{}) {
 		return "RAW(16)"
 	}
-	if strings.EqualFold("timestamp without time zone", string(field.DataType)) {
-		return "TIMESTAMP(6)"
-	}
+
 	var sqlType string
 	switch field.DataType {
 	case schema.Bool:
-		sqlType = "NUMBER(1)"
+		sqlType = booleanType
 	case schema.Int, schema.Uint:
 		sqlType = "INTEGER"
 		if field.Size > 0 && field.Size <= 8 {
@@ -582,6 +609,9 @@ func (d Dialector) DataTypeOf(field *schema.Field) string {
 
 		if strings.EqualFold(sqlType, "text") {
 			sqlType = "CLOB"
+		}
+		if strings.EqualFold(sqlType, "timestamp without time zone") {
+			sqlType = "TIMESTAMP"
 		}
 
 		if sqlType == "" {
