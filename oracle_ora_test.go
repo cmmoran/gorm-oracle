@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/stretchr/testify/assert"
 	"io"
 	"log"
 	"testing"
@@ -44,7 +45,7 @@ BEGIN
 END PRO_EXAMPLE_PAGING_QUERY;`
 )
 
-func ExampleRefCursor_Query() {
+func TestExampleRefCursor_Query(t *testing.T) {
 	db, err := dbNamingCase, dbErrors[0]
 	if err != nil || db == nil {
 		log.Fatal(err)
@@ -105,6 +106,7 @@ func ExampleRefCursor_Query() {
 		log.Fatal(err)
 	}
 	fmt.Println(len(dataRows) > 0)
+	assert.True(t, len(dataRows) > 0, "expecting dataRows to be > 0")
 	//Output: true
 }
 

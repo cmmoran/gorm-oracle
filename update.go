@@ -1,8 +1,6 @@
 package oracle
 
 import (
-	"fmt"
-	go_ora "github.com/sijms/go-ora/v2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
@@ -45,7 +43,6 @@ func Update(config *callbacks.Config) func(db *gorm.DB) {
 			}
 
 			stmt.Build(stmt.BuildClauses...)
-			bindOracleReturning(stmt)
 		}
 
 		checkMissingWhereConditions(db)
@@ -53,8 +50,19 @@ func Update(config *callbacks.Config) func(db *gorm.DB) {
 		if !db.DryRun && db.Error == nil {
 			result, err := stmt.ConnPool.ExecContext(stmt.Context, stmt.SQL.String(), stmt.Vars...)
 
-			if db.AddError(err) == nil {
+			if err != nil && err.Error() == "output parameter should be pointer type" {
+				// Note: this error comes from go-ora when the update execution fails and the go_ora.Out{Dest} fields are set to nil
+				if _, hasReturning := stmt.Clauses[clause.Returning{}.Name()]; hasReturning {
+					err = nil
+				}
+				db.RowsAffected = 0
+			} else if db.AddError(err) == nil {
 				db.RowsAffected, _ = result.RowsAffected()
+			}
+
+			if stmt.Result != nil {
+				stmt.Result.Result = result
+				stmt.Result.RowsAffected = db.RowsAffected
 			}
 		}
 	}
@@ -104,97 +112,6 @@ func instantiateNilPointers(v reflect.Value) {
 			instantiateNilPointers(field)
 		default:
 		}
-	}
-}
-
-func bindOracleReturning(stmt *gorm.Statement) {
-	// Locate the RETURNING clause
-	ret, ok := stmt.Clauses[clause.Returning{}.Name()]
-	if !ok {
-		return
-	}
-	cols := ret.Expression.(clause.Returning).Columns
-	_, _ = stmt.WriteString(" INTO ")
-
-	// Determine the struct root for binding
-	var rv reflect.Value
-	if !stmt.ReflectValue.IsValid() && stmt.Model != nil {
-		rv = reflect.ValueOf(stmt.Model)
-		for rv.Kind() == reflect.Ptr {
-			rv = rv.Elem()
-		}
-	} else {
-		rv = stmt.ReflectValue
-		instantiateNilPointers(rv)
-		for rv.Kind() == reflect.Ptr {
-			rv = rv.Elem()
-		}
-	}
-	if len(cols) == 0 {
-		for _, f := range stmt.Schema.Fields {
-			cols = append(cols, clause.Column{Name: f.DBName})
-		}
-	}
-
-	// Append an OUT bind for each column
-	for i, col := range cols {
-		// Match column to schema field
-		var sf *schema.Field
-		for _, f := range stmt.Schema.Fields {
-			name := stmt.DB.NamingStrategy.ColumnName("", col.Name)
-			if f.DBName == name {
-				sf = f
-				break
-			}
-		}
-		// Determine destination pointer
-		var (
-			destPtr interface{}
-			size    int
-		)
-		if sf != nil {
-			field := rv.FieldByName(sf.Name)
-
-			var refVal reflect.Value
-			refVal = sf.ReflectValueOf(stmt.Context, rv)
-			if refVal.IsValid() && refVal.CanAddr() {
-				destPtr = refVal.Addr().Interface()
-			} else {
-				destPtr = field.Interface()
-			}
-			if field.Kind() == reflect.Ptr {
-				field = field.Elem()
-			}
-
-			switch field.Kind() {
-			case reflect.Bool:
-				if sf.Size == 0 {
-					size = 64
-				} else {
-					size = sf.Size
-				}
-			case reflect.String:
-				if sf.Size == 0 {
-					size = 4000
-				} else {
-					size = sf.Size
-				}
-			default:
-				size = sf.Size
-			}
-		} else {
-			var tmp interface{}
-			destPtr = &tmp
-		}
-		if i > 0 {
-			_, _ = stmt.WriteString(", ")
-		}
-		stmt.AddVar(stmt, go_ora.Out{
-			Dest: destPtr,
-			Size: size,
-			In:   true,
-		})
-		_, _ = stmt.WriteString(fmt.Sprintf("/*- %s -*/", col.Name))
 	}
 }
 

@@ -4,8 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"gorm.io/gorm/clause"
+	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"reflect"
 	"strconv"
@@ -13,8 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/stretchr/testify/assert"
+	tc "github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
 )
@@ -23,46 +28,161 @@ var (
 	dbNamingCase *gorm.DB
 	dbIgnoreCase *gorm.DB
 
-	dbErrors = make([]error, 2)
+	testDbContext = context.Background()
+	dbErrors      = make([]error, 2)
 )
 
-func init() {
-	if wait := os.Getenv("GORM_ORA_WAIT_MIN"); wait != "" {
-		if waitMin, e := strconv.Atoi(wait); e == nil {
-			log.Println("wait for oracle database initialization to complete...")
-			time.Sleep(time.Duration(waitMin) * time.Minute)
+type errorF struct {
+	l *slog.Logger
+}
+
+func (e *errorF) Errorf(format string, args ...interface{}) {
+	e.l.Error(fmt.Sprintf(format, args...))
+}
+
+func TestMain(m *testing.M) {
+	l := slog.Default()
+	t := &errorF{l: l}
+	if _, ok := os.LookupEnv("GORM_NO_DB"); !ok {
+		gnc := "0"
+		if gnc, ok = os.LookupEnv("GORM_NO_CONTAINER"); ok && gnc == "1" {
+			testDbContext = context.WithValue(testDbContext, "host", os.Getenv("GORM_ORA_HOST"))
+			testDbContext = context.WithValue(testDbContext, "port", os.Getenv("GORM_ORA_PORT"))
+			dbNamingCase = openTestConnection(testDbContext, t, true, true, true)
+			dbIgnoreCase = openTestConnection(testDbContext, t, true, false, true)
+		} else {
+			defer func() {
+				if oraContainer := testDbContext.Value("db").(tc.Container); oraContainer != nil {
+					_ = oraContainer.Terminate(testDbContext)
+				}
+			}()
+			testDbContext = startDatabase(t)
+			dbNamingCase = openTestConnection(testDbContext, t, true, true, true)
+			dbIgnoreCase = openTestConnection(testDbContext, t, true, false, true)
 		}
 	}
-	var err error
-	if dbNamingCase, err = openTestConnection(true, true); err != nil {
-		dbErrors[0] = err
-	}
-	if dbIgnoreCase, err = openTestConnection(true, false); err != nil {
-		dbErrors[1] = err
-	}
+
+	// Run tests
+	exitCode := m.Run()
+
+	os.Exit(exitCode)
 }
 
-func openTestConnection(ignoreCase, namingCase bool) (db *gorm.DB, err error) {
-	dsn := getTestDSN()
+func startDatabase(t assert.TestingT) context.Context {
+	ctx := context.Background()
 
+	gopPort := os.Getenv("GORM_ORA_PORT")
+	if gopPort != "" {
+		iport, err := strconv.Atoi(gopPort)
+		if err != nil || iport > 65535 || iport < 1025 {
+			gopPort = ""
+		} else {
+			gopPort = fmt.Sprintf("%d:", iport)
+		}
+	}
+	user := os.Getenv("GORM_ORA_USER")
+	if user == "" {
+		user = "gorm"
+	}
+	pass := os.Getenv("GORM_ORA_PASS")
+	if pass == "" {
+		pass = "gorm"
+	}
+	env := map[string]string{
+		"ORACLE_PASSWORD":   pass,
+		"APP_USER":          user,
+		"APP_USER_PASSWORD": pass,
+	}
+	service := os.Getenv("GORM_ORA_SERVICE")
+	if service != "" && service != "FREEPDB1" {
+		env["ORACLE_DATABASE"] = service
+	}
+	req := tc.ContainerRequest{
+		Image:        "gvenzl/oracle-free:slim",
+		Env:          env,
+		ExposedPorts: []string{fmt.Sprintf("%s1521/tcp", gopPort)},
+		WaitingFor:   wait.ForLog("Completed: ALTER DATABASE OPEN").WithStartupTimeout(2 * time.Minute),
+		Name:         "local-oracle-free",
+		HostConfigModifier: func(config *container.HostConfig) {
+			config.AutoRemove = true
+		},
+	}
+
+	var (
+		oraContainer tc.Container
+		err          error
+	)
+	oraContainer, err = tc.GenericContainer(ctx, tc.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	ctx = context.WithValue(ctx, "db", oraContainer)
+	assert.NoError(t, err, "Failed to start container")
+
+	ip, err := oraContainer.Host(ctx)
+	assert.NoError(t, err, "Failed to get container host")
+	ctx = context.WithValue(ctx, "host", ip)
+
+	port, err := oraContainer.MappedPort(ctx, "1521")
+	assert.NoError(t, err, "Failed to get mapped port")
+	ctx = context.WithValue(ctx, "port", port.Port())
+
+	fmt.Printf("Oracle Free is running at %s:%s\n", ip, port.Port())
+
+	return ctx
+}
+
+type ow struct{}
+
+func (ow) Printf(s string, i ...interface{}) {
+	fmt.Printf(fmt.Sprintf("%s\n", s), i...)
+}
+
+func openTestConnection(ctx context.Context, t assert.TestingT, ignoreCase, namingCase, useClobForText bool) *gorm.DB {
+	o := ow{}
+	l := logger.New(o, logger.Config{
+		SlowThreshold: time.Second,
+		Colorful:      true,
+		LogLevel:      logger.Info,
+	})
+
+	var (
+		db  *gorm.DB
+		err error
+	)
+	url := getTestDSN(ctx, t)
 	db, err = gorm.Open(New(Config{
-		DSN:                 dsn,
-		IgnoreCase:          ignoreCase,
-		NamingCaseSensitive: namingCase,
-	}), getTestGormConfig())
-	if db != nil && err == nil {
-		log.Println("open oracle database connection success!")
-	}
-	return
+		DSN:                     url,
+		VarcharSizeIsCharLength: true,
+		IgnoreCase:              ignoreCase,
+		NamingCaseSensitive:     namingCase,
+		UseClobForTextType:      useClobForText,
+	}), getTestGormConfig(l))
+	assert.NoError(t, err, "Failed to connect to database")
+
+	return db
 }
 
-func getTestDSN() (dsn string) {
+func getTestDSN(ctx context.Context, t assert.TestingT) (dsn string) {
 	dsn = os.Getenv("GORM_ORA_DSN")
 	if dsn == "" {
-		server := os.Getenv("GORM_ORA_SERVER")
-		port, _ := strconv.Atoi(os.Getenv("GORM_ORA_PORT"))
-		if server == "" || port < 1 {
-			return
+		if ctx == nil {
+			ctx = testDbContext
+		}
+
+		var (
+			server = ""
+			port   int
+			err    error
+		)
+		if tmpHost := ctx.Value("host").(string); tmpHost != "" {
+			server = tmpHost
+			assert.NotEmpty(t, server, "Failed to get db host")
+		}
+		if tmpPort := ctx.Value("port").(string); tmpPort != "" {
+			port, err = strconv.Atoi(tmpPort)
+			assert.NoError(t, err, "Failed to get mapped port")
+			assert.NotEqual(t, 0, port, "Failed to get db port")
 		}
 
 		language := os.Getenv("GORM_ORA_LANG")
@@ -74,29 +194,50 @@ func getTestDSN() (dsn string) {
 			territory = "AMERICA"
 		}
 
-		dsn = BuildUrl(server, port,
-			os.Getenv("GORM_ORA_SID"),
-			os.Getenv("GORM_ORA_USER"),
-			os.Getenv("GORM_ORA_PASS"),
+		service := os.Getenv("GORM_ORA_SERVICE")
+		if service != "" && service != "FREEPDB1" {
+			service = strings.Split(service, ",")[0]
+			if len(service) == 0 {
+				service = "FREEPDB1"
+			}
+		}
+
+		user := os.Getenv("GORM_ORA_USER")
+		if user == "" {
+			user = "gorm"
+		}
+		pass := os.Getenv("GORM_ORA_PASS")
+		if pass == "" {
+			pass = "gorm"
+		}
+
+		dsn = BuildUrl(
+			server,
+			port,
+			service,
+			user,
+			pass,
 			map[string]string{
-				"CONNECTION TIMEOUT": "90",
-				"LANGUAGE":           language,
-				"TERRITORY":          territory,
-				"SSL":                "false",
-			})
+				"LANGUAGE":  language,
+				"TERRITORY": territory,
+				"SSL":       "false",
+			},
+		)
 	}
 	return
 }
 
-func getTestGormConfig() *gorm.Config {
-	logWriter := new(log.Logger)
-	logWriter.SetOutput(os.Stdout)
-
-	return &gorm.Config{
-		Logger: logger.New(
-			logWriter,
+func getTestGormConfig(logWriter logger.Interface) *gorm.Config {
+	if logWriter == nil {
+		lw := new(log.Logger)
+		lw.SetOutput(os.Stdout)
+		logWriter = logger.New(
+			lw,
 			logger.Config{LogLevel: logger.Info},
-		),
+		)
+	}
+	return &gorm.Config{
+		Logger:                                   logWriter,
 		DisableForeignKeyConstraintWhenMigrating: false,
 		IgnoreRelationshipsWhenMigrating:         false,
 		NamingStrategy: schema.NamingStrategy{
@@ -141,20 +282,94 @@ func TestCountLimit0(t *testing.T) {
 	}
 }
 
-func TestReturning(t *testing.T) {
-	db, err := dbNamingCase, dbErrors[0]
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestReturningInto(t *testing.T) {
+	db := dbNamingCase
+
 	if db == nil {
 		t.Log("db is nil!")
 		return
 	}
 	ctx := func() context.Context {
-		return context.Background()
+		return testDbContext
 	}
 
-	err = db.AutoMigrate(TestTableUser{})
+	_ = db.Exec("DROP TABLE test_user cascade constraints purge")
+
+	err := db.WithContext(ctx()).Migrator().AutoMigrate(TestTableUser{})
+	assert.NoError(t, err, "expecting no error automigrating")
+
+	model := &TestTableUser{
+		UID:         "U1",
+		Name:        "Lisa",
+		Account:     "lisa",
+		Password:    "H6aLDNr",
+		PhoneNumber: "+8616666666666",
+		Sex:         "0",
+		UserType:    1,
+		Birthday: func() *time.Time {
+			the := time.Date(1978, 5, 1, 0, 0, 0, 0, time.UTC).UTC()
+			return &the
+		}(),
+		Enabled: true,
+	}
+	res := db.WithContext(ctx()).Create(model)
+	assert.NoError(t, res.Error, "expecting no error creating model")
+	modelId := model.ID
+	res = db.WithContext(ctx()).First(model)
+	assert.NoError(t, res.Error, "expecting no error finding first")
+	assert.EqualValuesf(t, modelId, model.ID, "expecting model ID to be %d", modelId)
+
+	model.Name = "Alice"
+	res = db.WithContext(ctx()).Updates(model)
+	assert.NoError(t, res.Error, "expecting no error updating Name")
+	assert.EqualValuesf(t, "Alice", model.Name, "expecting Name to be 'Alice' was %s", model.Name)
+
+	res = db.WithContext(ctx()).Model(model).Updates(map[string]any{"name": "Zulu", "user_type": clause.Expr{SQL: "\"user_type\" + 1"}})
+	assert.NoError(t, res.Error, "expecting no error updating Name")
+	assert.EqualValuesf(t, "Zulu", model.Name, "expecting Name to be 'Zulu' was %s", model.Name)
+	assert.EqualValuesf(t, 1, model.UserType, "expecting UserType to be unchanged at 1 was %d", model.UserType)
+	res = db.WithContext(ctx()).First(model)
+	assert.NoError(t, res.Error, "expecting no error re-finding first")
+	assert.EqualValuesf(t, "Zulu", model.Name, "expecting Name to be 'Zulu' was %s", model.Name)
+	assert.EqualValuesf(t, 2, model.UserType, "expecting UserType to be refreshed to persisted value at 2 was %d", model.UserType)
+	res = db.WithContext(ctx()).Model(model).Clauses(clause.Returning{}).Updates(map[string]any{"name": "Zulu2", "user_type": clause.Expr{SQL: "\"user_type\" + 1"}})
+	assert.NoError(t, res.Error, "expecting no error updating Name and user_type with Returning")
+	assert.EqualValuesf(t, "Zulu2", model.Name, "expecting Name to be 'Zulu2' was %s", model.Name)
+	assert.EqualValuesf(t, 3, model.UserType, "expecting UserType to be updated in-place at 3 was %d", model.UserType)
+
+	model.Name = "Bob"
+	model.Account = "bob"
+	res = db.WithContext(ctx()).Clauses(clause.Returning{}).Updates(model)
+	assert.NoError(t, res.Error, "expecting no error updating Name with Returning")
+	assert.EqualValuesf(t, "Bob", model.Name, "expecting Name to be 'Bob' was %s", model.Name)
+
+	res = db.WithContext(ctx()).Clauses(clause.Returning{}).Model(model).Updates(map[string]any{"name": "Charlie", "account": "charlie"})
+	assert.NoError(t, res.Error, "expecting no error updating with map with Returning")
+	assert.EqualValuesf(t, "Charlie", model.Name, "expecting Name to be 'Charlie' was %s", model.Name)
+	assert.EqualValuesf(t, "charlie", model.Account, "expecting Account to be 'charlie' was %s", model.Account)
+
+	res = db.WithContext(ctx()).Clauses(clause.Returning{}).Model(model).Where("\"name\" = ?", "Delta").Updates(map[string]any{"name": "Charlie", "account": "charlie"})
+	assert.NoError(t, res.Error, "expecting no error updating with map with Returning")
+	assert.EqualValuesf(t, "Charlie", model.Name, "expecting Name to be 'Charlie' was %s", model.Name)
+	assert.EqualValuesf(t, "charlie", model.Account, "expecting Account to be 'charlie' was %s", model.Account)
+
+}
+
+func TestReturning(t *testing.T) {
+	//db := openTestConnection(nil, t, true, true, false)
+	db := dbNamingCase
+
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+	ctx := func() context.Context {
+		return testDbContext
+	}
+
+	_ = db.Exec("DROP TABLE test_user cascade constraints purge")
+
+	err := db.Migrator().AutoMigrate(TestTableUser{})
 	assert.NoError(t, err, "expecting no error")
 	model := TestTableUser{
 		UID:         "U1",
@@ -168,10 +383,10 @@ func TestReturning(t *testing.T) {
 		Enabled:     true,
 	}
 	res := db.WithContext(ctx()).Create(&model)
-	assert.NoError(t, err, "expecting no error")
+	assert.NoError(t, res.Error, "expecting no error")
 	modelId := model.ID
 	res = db.WithContext(ctx()).First(&model)
-	assert.NoError(t, err, "expecting no error")
+	assert.NoError(t, res.Error, "expecting no error")
 	assert.Equal(t, modelId, model.ID)
 	model.Name = "Bob"
 	model.Sex = "m"
@@ -392,14 +607,14 @@ func TestGetStringExpr(t *testing.T) {
 }
 
 func TestVarcharSizeIsCharLength(t *testing.T) {
-	dsn := getTestDSN()
+	dsn := getTestDSN(nil, t)
 
 	db, err := gorm.Open(New(Config{
 		DSN:                     dsn,
 		IgnoreCase:              true,
 		NamingCaseSensitive:     true,
 		VarcharSizeIsCharLength: true,
-	}), getTestGormConfig())
+	}), getTestGormConfig(nil))
 	if db != nil && err == nil {
 		log.Println("open oracle database connection success!")
 	} else {
@@ -447,4 +662,155 @@ type TestTableUserVarcharSize struct {
 
 func (TestTableUserVarcharSize) TableName() string {
 	return "test_user_varchar_size"
+}
+
+func Test_reflectDereference(t *testing.T) {
+	type args struct {
+		obj any
+	}
+	x := 5
+	var px *int = &x
+	var nilPtr *int
+	var nilIface any = nil
+	var ifaceWithPtr any = px
+	var ifaceWithNilPtr any = nilPtr
+	var nestedPtr **int = &px
+
+	tests := []struct {
+		name string
+		args args
+		want any
+	}{
+		{
+			name: "primitive int",
+			args: args{obj: 5},
+			want: 5,
+		},
+		{
+			name: "pointer to int",
+			args: args{obj: px},
+			want: 5,
+		},
+		{
+			name: "nil pointer",
+			args: args{obj: nilPtr},
+			want: nil,
+		},
+		{
+			name: "nil interface",
+			args: args{obj: nilIface},
+			want: nil,
+		},
+		{
+			name: "interface with pointer to int",
+			args: args{obj: ifaceWithPtr},
+			want: 5,
+		},
+		{
+			name: "interface with nil pointer",
+			args: args{obj: ifaceWithNilPtr},
+			want: nil,
+		},
+		{
+			name: "nested pointer",
+			args: args{obj: nestedPtr},
+			want: 5,
+		},
+		{
+			name: "interface wrapping primitive",
+			args: args{obj: any(5)},
+			want: 5,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equalf(t, tt.want, reflectDereference(tt.args.obj), "reflectDereference(%v)", tt.args.obj)
+		})
+	}
+}
+
+func Test_reflectReference(t *testing.T) {
+	x := 5
+	px := &x
+	var nilPtr *int
+	var iface any = x
+	var ifacePtr any = px
+	var ifaceNilPtr any = nilPtr
+
+	type args struct {
+		obj          any
+		wrapPointers bool
+	}
+	tests := []struct {
+		name string
+		args args
+		want any
+	}{
+		{
+			name: "wrap primitive int",
+			args: args{obj: x},
+			want: func() any {
+				v := x
+				return &v
+			}(),
+		},
+		{
+			name: "leave pointer as-is",
+			args: args{obj: px},
+			want: px,
+		},
+		{
+			name: "wrap pointer again if wrapPointers=true",
+			args: args{obj: px, wrapPointers: true},
+			want: func() any {
+				return &px
+			}(),
+		},
+		{
+			name: "interface containing int",
+			args: args{obj: iface},
+			want: func() any {
+				v := 5
+				return &v
+			}(),
+		},
+		{
+			name: "interface containing pointer",
+			args: args{obj: ifacePtr},
+			want: px,
+		},
+		{
+			name: "interface containing pointer (original any value)",
+			args: args{obj: ifacePtr},
+			want: ifacePtr,
+		},
+		{
+			name: "interface containing pointer with wrapPointers=true",
+			args: args{obj: ifacePtr, wrapPointers: true},
+			want: func() any {
+				return &px
+			}(),
+		},
+		{
+			name: "nil value",
+			args: args{obj: nil},
+			want: nil,
+		},
+		{
+			name: "interface(nil pointer)",
+			args: args{obj: ifaceNilPtr},
+			want: nilPtr,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got any
+			if tt.args.wrapPointers {
+				got = reflectReference(tt.args.obj, true)
+			} else {
+				got = reflectReference(tt.args.obj)
+			}
+			assert.Equalf(t, tt.want, got, "reflectReference(%v, %v)", tt.args.obj, tt.args.wrapPointers)
+		})
+	}
 }

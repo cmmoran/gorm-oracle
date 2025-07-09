@@ -3,6 +3,8 @@ package oracle
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -34,6 +36,7 @@ type Config struct {
 
 	// RowNumberAliasForOracle11 is the alias for ROW_NUMBER() in Oracle 11g, defaulting to ROW_NUM
 	RowNumberAliasForOracle11 string
+	UseClobForTextType        bool
 }
 
 // Dialector implement GORM database dialector
@@ -174,23 +177,49 @@ func convertCustomType(val interface{}) interface{} {
 	return val
 }
 
-func ptrDereference(obj interface{}) (value interface{}) {
+func reflectDereference(obj any) any {
 	if obj == nil {
-		return obj
-	}
-	if t := reflect.TypeOf(obj); t.Kind() != reflect.Ptr {
-		return obj
+		return nil
 	}
 
 	v := reflect.ValueOf(obj)
-	for v.Kind() == reflect.Ptr && !v.IsNil() {
+
+	// Unwrap interfaces and pointers
+	for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return nil
+		}
 		v = v.Elem()
 	}
-	if !v.IsValid() || v.Kind() == reflect.Ptr && v.IsNil() {
-		return obj
+
+	return v.Interface()
+}
+
+func reflectReference(obj any, wrapPointers ...bool) any {
+	if obj == nil {
+		return nil
 	}
-	value = v.Interface()
-	return
+
+	v := reflect.ValueOf(obj)
+
+	// Unwrap interfaces
+	for v.Kind() == reflect.Interface && !v.IsNil() {
+		v = v.Elem()
+	}
+
+	// Decide whether to wrap pointers or not
+	if v.Kind() == reflect.Ptr {
+		if len(wrapPointers) == 0 || !wrapPointers[0] {
+			return obj // Leave pointer as-is
+		}
+		// wrapPointers[0] is true → wrap pointer again
+	}
+
+	// Create a new pointer to the value
+	ptrVal := reflect.New(v.Type())
+	ptrVal.Elem().Set(v)
+
+	return ptrVal.Interface()
 }
 
 func getTimeValue(t time.Time) interface{} {
@@ -294,7 +323,64 @@ func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuil
 						builder.WriteQuoted(f.DBName)
 						returningExpression.Columns = append(returningExpression.Columns, clause.Column{Name: f.DBName})
 					}
+					cols := returningExpression.Columns
+					_, _ = stmt.WriteString(" INTO ")
+					// Determine the struct root for binding
+					var rv reflect.Value
+					if !stmt.ReflectValue.IsValid() && stmt.Model != nil {
+						rv = reflect.ValueOf(stmt.Model)
+						instantiateNilPointers(rv)
+						for rv.Kind() == reflect.Ptr {
+							rv = rv.Elem()
+						}
+					} else {
+						rv = stmt.ReflectValue
+						instantiateNilPointers(rv)
+						for rv.Kind() == reflect.Ptr {
+							rv = rv.Elem()
+						}
+					}
+					if len(cols) == 0 {
+						for _, f := range stmt.Schema.Fields {
+							cols = append(cols, clause.Column{Name: f.DBName})
+						}
+					}
 
+					// Append an OUT bind for each column
+					for i, col := range cols {
+						// Match column to schema field
+						sf := stmt.Schema.LookUpField(col.Name)
+						// Determine destination pointer
+						var (
+							destPtr driver.Value
+							size    int
+						)
+						if sf != nil {
+							field := rv.FieldByName(sf.Name)
+
+							var refVal reflect.Value
+							refVal = sf.ReflectValueOf(stmt.Context, rv)
+							if refVal.IsValid() && refVal.CanAddr() {
+								destPtr = refVal.Addr().Interface()
+							} else {
+								destPtr = field.Interface()
+							}
+
+							if sf.Size == 0 {
+								size = 1
+							} else {
+								size = sf.Size
+							}
+						}
+						if i > 0 {
+							_, _ = stmt.WriteString(", ")
+						}
+						stmt.AddVar(stmt, go_ora.Out{
+							Dest: destPtr,
+							Size: size,
+						})
+						_, _ = stmt.WriteString(fmt.Sprintf("/*- %s -*/", col.Name))
+					}
 				} else if set, sok := stmt.Clauses["SET"]; sok {
 					for idx, asn := range set.Expression.(clause.Set) {
 						if idx > 0 {
@@ -529,7 +615,7 @@ var numericPlaceholder = regexp.MustCompile(`:(\d+)`)
 
 func (d Dialector) Explain(sql string, vars ...interface{}) string {
 	for idx, val := range vars {
-		switch v := ptrDereference(val).(type) {
+		switch v := reflectDereference(val).(type) {
 		case bool:
 			if v {
 				vars[idx] = 1
@@ -592,13 +678,18 @@ func (d Dialector) DataTypeOf(field *schema.Field) string {
 				if size*3 > 4000 {
 					sqlType = "CLOB"
 				} else {
-					sqlType = fmt.Sprintf("VARCHAR2(%d CHAR)", size) // 字符长度（size * 3）
+					// Character length（size * 3）
+					sqlType = fmt.Sprintf("VARCHAR2(%d CHAR)", size)
 				}
 			} else {
 				sqlType = fmt.Sprintf("VARCHAR2(%d)", size)
 			}
 		} else {
-			sqlType = "CLOB"
+			if d.Config.UseClobForTextType {
+				sqlType = "CLOB"
+			} else {
+				sqlType = "VARCHAR2(4000)"
+			}
 		}
 	case schema.Time:
 		sqlType = "TIMESTAMP WITH TIME ZONE"
@@ -608,7 +699,11 @@ func (d Dialector) DataTypeOf(field *schema.Field) string {
 		sqlType = string(field.DataType)
 
 		if strings.EqualFold(sqlType, "text") {
-			sqlType = "CLOB"
+			if d.Config.UseClobForTextType {
+				sqlType = "CLOB"
+			} else {
+				sqlType = "VARCHAR2(4000)"
+			}
 		}
 		if strings.EqualFold(sqlType, "timestamp without time zone") {
 			sqlType = "TIMESTAMP"
@@ -630,4 +725,22 @@ func (d Dialector) SavePoint(tx *gorm.DB, name string) error {
 func (d Dialector) RollbackTo(tx *gorm.DB, name string) error {
 	tx.Exec("ROLLBACK TO SAVEPOINT " + name)
 	return tx.Error
+}
+
+func (d Dialector) Translate(err error) error {
+	if err == nil {
+		return err
+	}
+	if strings.Contains(err.Error(), "output parameter should be pointer type") {
+		var terr error
+		if e, ok := err.(interface{ Unwrap() error }); ok {
+			terr = e.Unwrap()
+		}
+		if e, ok := err.(interface{ Unwrap() []error }); ok {
+			terrs := e.Unwrap()[1:]
+			terr = errors.Join(terrs...)
+		}
+		return terr
+	}
+	return err
 }

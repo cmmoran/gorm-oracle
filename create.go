@@ -226,7 +226,7 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 }
 
 func convertValue(val interface{}) interface{} {
-	val = ptrDereference(val)
+	val = reflectDereference(val)
 	switch v := val.(type) {
 	case bool:
 		if v {
@@ -245,7 +245,7 @@ func convertValue(val interface{}) interface{} {
 }
 
 func getDummyTable(db *gorm.DB) (dummyTable string) {
-	switch d := ptrDereference(db.Dialector).(type) {
+	switch d := reflectDereference(db.Dialector).(type) {
 	case Dialector:
 		dummyTable = d.DummyTableName()
 	default:
