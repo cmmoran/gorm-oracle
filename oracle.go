@@ -12,12 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/sijms/go-ora/v2"
+	"golang.org/x/exp/slices"
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
-	"gorm.io/gorm/logger"
 	"gorm.io/gorm/migrator"
 	"gorm.io/gorm/schema"
 )
@@ -37,6 +36,11 @@ type Config struct {
 	// RowNumberAliasForOracle11 is the alias for ROW_NUMBER() in Oracle 11g, defaulting to ROW_NUM
 	RowNumberAliasForOracle11 string
 	UseClobForTextType        bool
+	// time conversion for all clauses to ensure proper time rounding
+	TimeGranularity time.Duration
+	// use this timezone for the session
+	SessionTimezone string
+	sessionLocation *time.Location
 }
 
 // Dialector implement GORM database dialector
@@ -166,7 +170,7 @@ func convertCustomType(val interface{}) interface{} {
 		} else {
 			val = getTimeValue(ri.(gorm.DeletedAt).Time)
 		}
-	} else if m := rv.MethodByName("Time"); m.IsValid() && m.Type().NumIn() == 0 {
+	} else if m := rv.MethodByName("Time"); m.IsValid() && m.Type().NumIn() == 0 && !ty16Byte.AssignableTo(rv.Type()) {
 		// custom time type
 		for _, result := range m.Call([]reflect.Value{}) {
 			if reflect.TypeOf(result.Interface()).Name() == "Time" {
@@ -269,15 +273,28 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 			_ = go_ora.AddSessionParam(sqlDB, "NLS_SORT", "BINARY_CI")
 		}
 	}
+
+	loc, err := time.LoadLocation(d.SessionTimezone)
+	if err != nil {
+		loc = time.Local
+	}
+	d.sessionLocation = loc
+	if sqlDB, ok := db.ConnPool.(*sql.DB); ok {
+		_ = go_ora.AddSessionParam(sqlDB, "TIME_ZONE", loc.String())
+	}
+
 	err = db.ConnPool.QueryRowContext(context.Background(), "select version from product_component_version where rownum = 1").Scan(&d.DBVer)
 	if err != nil {
 		return err
 	}
-	//log.Println("DBVer:" + d.DBVer)
+
 	if err = db.Callback().Create().Replace("gorm:create", Create); err != nil {
 		return
 	}
 	if err = db.Callback().Update().Replace("gorm:update", Update(config)); err != nil {
+		return
+	}
+	if err = db.Callback().Delete().Replace("gorm:delete", Delete(config)); err != nil {
 		return
 	}
 
@@ -285,6 +302,21 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 		db.ClauseBuilders[k] = v
 	}
 	return
+}
+
+func stableDbNameFields(m *schema.Schema, cols []clause.Column) []*schema.Field {
+	if m == nil {
+		return nil
+	}
+	ordered := make([]*schema.Field, 0, len(m.Fields))
+	for _, f := range m.Fields {
+		if fld, ok := m.FieldsByDBName[f.DBName]; ok && (len(cols) == 0 || slices.ContainsFunc(cols, func(c clause.Column) bool {
+			return c.Name == fld.DBName
+		})) {
+			ordered = append(ordered, fld)
+		}
+	}
+	return ordered
 }
 
 func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuilder) {
@@ -297,104 +329,72 @@ func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuil
 	}
 
 	clauseBuilders["RETURNING"] = func(c clause.Clause, builder clause.Builder) {
-		if returning, ok := c.Expression.(clause.Returning); ok {
+		if _, ok := c.Expression.(clause.Returning); ok {
 			_, _ = builder.WriteString("/*- -*/")
 			_, _ = builder.WriteString("RETURNING ")
 
-			if len(returning.Columns) > 0 {
-				for idx, column := range returning.Columns {
+			stmt, _ := builder.(*gorm.Statement)
+
+			returningClause := stmt.Clauses["RETURNING"]
+			rCols := returningClause.Expression.(clause.Returning).Columns
+			returningFields := stableDbNameFields(stmt.Schema, rCols)
+			wasEmpty := len(returningFields) == 0
+			appendReturningColumns := func(colName string) {
+				if wasEmpty {
+					rCols = append(rCols, clause.Column{Name: colName})
+				}
+			}
+			if len(returningFields) > 0 {
+				for idx, f := range returningFields {
 					if idx > 0 {
 						_ = builder.WriteByte(',')
 					}
-
-					builder.WriteQuoted(column)
+					builder.WriteQuoted(f.DBName)
+					appendReturningColumns(f.DBName)
 				}
-			} else {
-				stmt, _ := builder.(*gorm.Statement)
+				_, _ = stmt.WriteString(" INTO ")
 
-				returningClause := stmt.Clauses["RETURNING"]
-				returningExpression := returningClause.Expression.(clause.Returning)
-				if stmt.Schema != nil && len(stmt.Schema.Fields) > 0 {
-					for idx, f := range stmt.Schema.Fields {
-						if idx > 0 {
-							_ = builder.WriteByte(',')
-						}
+				// Determine the struct root for binding
+				rv := stmt.ReflectValue
+				instantiateNilPointers(rv)
+				for rv.Kind() == reflect.Ptr {
+					rv = rv.Elem()
+				}
 
-						builder.WriteQuoted(f.DBName)
-						returningExpression.Columns = append(returningExpression.Columns, clause.Column{Name: f.DBName})
-					}
-					cols := returningExpression.Columns
-					_, _ = stmt.WriteString(" INTO ")
-					// Determine the struct root for binding
-					var rv reflect.Value
-					if !stmt.ReflectValue.IsValid() && stmt.Model != nil {
-						rv = reflect.ValueOf(stmt.Model)
-						instantiateNilPointers(rv)
-						for rv.Kind() == reflect.Ptr {
-							rv = rv.Elem()
-						}
+				// Append an OUT bind for each column
+				for i, sf := range returningFields {
+					var (
+						destPtr driver.Value
+						size    int
+					)
+					field := rv.FieldByName(sf.Name)
+
+					var refVal reflect.Value
+					refVal = sf.ReflectValueOf(stmt.Context, rv)
+					if refVal.IsValid() && refVal.CanAddr() {
+						destPtr = refVal.Addr().Interface()
 					} else {
-						rv = stmt.ReflectValue
-						instantiateNilPointers(rv)
-						for rv.Kind() == reflect.Ptr {
-							rv = rv.Elem()
-						}
-					}
-					if len(cols) == 0 {
-						for _, f := range stmt.Schema.Fields {
-							cols = append(cols, clause.Column{Name: f.DBName})
-						}
+						destPtr = field.Interface()
 					}
 
-					// Append an OUT bind for each column
-					for i, col := range cols {
-						// Match column to schema field
-						sf := stmt.Schema.LookUpField(col.Name)
-						// Determine destination pointer
-						var (
-							destPtr driver.Value
-							size    int
-						)
-						if sf != nil {
-							field := rv.FieldByName(sf.Name)
-
-							var refVal reflect.Value
-							refVal = sf.ReflectValueOf(stmt.Context, rv)
-							if refVal.IsValid() && refVal.CanAddr() {
-								destPtr = refVal.Addr().Interface()
-							} else {
-								destPtr = field.Interface()
-							}
-
-							if sf.Size == 0 {
-								size = 1
-							} else {
-								size = sf.Size
-							}
-						}
-						if i > 0 {
-							_, _ = stmt.WriteString(", ")
-						}
-						stmt.AddVar(stmt, go_ora.Out{
-							Dest: destPtr,
-							Size: size,
-						})
-						_, _ = stmt.WriteString(fmt.Sprintf("/*- %s -*/", col.Name))
+					if sf.Size == 0 {
+						size = 1
+					} else {
+						size = sf.Size
 					}
-				} else if set, sok := stmt.Clauses["SET"]; sok {
-					for idx, asn := range set.Expression.(clause.Set) {
-						if idx > 0 {
-							_ = builder.WriteByte(',')
-						}
-
-						builder.WriteQuoted(asn.Column.Name)
-						returningExpression.Columns = append(returningExpression.Columns, asn.Column)
+					if i > 0 {
+						_, _ = stmt.WriteString(", ")
 					}
+					stmt.AddVar(stmt, go_ora.Out{
+						Dest: destPtr,
+						Size: size,
+					})
+					_, _ = stmt.WriteString(fmt.Sprintf("/*- %s -*/", sf.Name))
 				}
-				returningClause.Expression = returningExpression
-				stmt.Clauses["RETURNING"] = returningClause
 			}
+			stmt.Clauses["RETURNING"] = returningClause
 		}
+
 	}
 	return
 }
@@ -626,24 +626,32 @@ func (d Dialector) Explain(sql string, vars ...interface{}) string {
 			vars[idx] = v.String
 		}
 	}
-	return logger.ExplainSQL(sql, numericPlaceholder, `'`, vars...)
+	return ExplainSQL(sql, numericPlaceholder, `'`, vars...)
+}
+
+var ty16Byte = reflect.TypeOf((*[16]byte)(nil)).Elem()
+
+// Check for types that match ~[16]byte
+func isSixteenByteType(t reflect.Type) bool {
+	// Now check for: array of length 16 whose element is byte
+	return t.Kind() != reflect.Pointer && ty16Byte.AssignableTo(t) || t.Kind() == reflect.Pointer && ty16Byte.AssignableTo(t.Elem())
 }
 
 func (d Dialector) DataTypeOf(field *schema.Field) string {
 	delete(field.TagSettings, "RESTRICT")
-	booleanType := "NUMBER(1)"
-	if dbVer, _ := strconv.Atoi(strings.Split(d.DBVer, ".")[0]); dbVer >= 23 {
-		booleanType = "BOOLEAN"
-	}
 
-	// Handle google/uuid.UUID as RAW(16)
-	if field.FieldType == reflect.TypeOf(uuid.UUID{}) {
+	// Handle any uuid/ulid as RAW(16)
+	if isSixteenByteType(field.FieldType) {
 		return "RAW(16)"
 	}
 
 	var sqlType string
 	switch field.DataType {
 	case schema.Bool:
+		booleanType := "NUMBER(1)"
+		if dbVer, _ := strconv.Atoi(strings.Split(d.DBVer, ".")[0]); dbVer >= 23 {
+			booleanType = "BOOLEAN"
+		}
 		sqlType = booleanType
 	case schema.Int, schema.Uint:
 		sqlType = "INTEGER"
@@ -706,7 +714,7 @@ func (d Dialector) DataTypeOf(field *schema.Field) string {
 			}
 		}
 		if strings.EqualFold(sqlType, "timestamp without time zone") {
-			sqlType = "TIMESTAMP"
+			sqlType = "TIMESTAMP WITH LOCAL TIME ZONE"
 		}
 
 		if sqlType == "" {
@@ -743,4 +751,30 @@ func (d Dialector) Translate(err error) error {
 		return terr
 	}
 	return err
+}
+
+func toBytesFrom16Array(val interface{}) ([]byte, error) {
+	rv := reflect.ValueOf(val)
+	for rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	rt := rv.Type()
+
+	// check it’s an Array of length 16
+	if rt.Kind() != reflect.Array || rt.Len() != 16 {
+		return nil, fmt.Errorf("expected array[16], got %s", rt)
+	}
+	// check element kind is uint8
+	if rt.Elem().Kind() != reflect.Uint8 {
+		return nil, fmt.Errorf("expected element kind uint8, got %s", rt.Elem())
+	}
+
+	// build a new slice and copy each element
+	out := make([]byte, 16)
+	for i := 0; i < 16; i++ {
+		// rv.Index(i) gives a reflect.Value of the element
+		// .Uint() returns its numeric (0–255) value
+		out[i] = byte(rv.Index(i).Uint())
+	}
+	return out, nil
 }

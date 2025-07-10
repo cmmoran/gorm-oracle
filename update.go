@@ -1,14 +1,15 @@
 package oracle
 
 import (
+	"reflect"
+	"sort"
+	"time"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/schema"
 	"gorm.io/gorm/utils"
-	"reflect"
-	"sort"
-	"time"
 )
 
 func Update(config *callbacks.Config) func(db *gorm.DB) {
@@ -268,35 +269,35 @@ func ConvertToAssignments(stmt *gorm.Statement) (set clause.Set) {
 				if field := updatingSchema.LookUpField(dbName); field != nil {
 					if !field.PrimaryKey || !updatingValue.CanAddr() || stmt.Dest != stmt.Model {
 						if v, ok := selectColumns[field.DBName]; (ok && v) || (!ok && (!restricted || (!stmt.SkipHooks && field.AutoUpdateTime > 0))) {
-							value, isZero := field.ValueOf(stmt.Context, updatingValue)
+							innerValue, isZero := field.ValueOf(stmt.Context, updatingValue)
 							if !stmt.SkipHooks && field.AutoUpdateTime > 0 {
 								if field.AutoUpdateTime == schema.UnixNanosecond {
-									value = stmt.DB.NowFunc().UnixNano()
+									innerValue = stmt.DB.NowFunc().UnixNano()
 								} else if field.AutoUpdateTime == schema.UnixMillisecond {
-									value = stmt.DB.NowFunc().UnixNano() / 1e6
+									innerValue = stmt.DB.NowFunc().UnixNano() / 1e6
 								} else if field.AutoUpdateTime == schema.UnixSecond {
-									value = stmt.DB.NowFunc().Unix()
+									innerValue = stmt.DB.NowFunc().Unix()
 								} else {
-									value = stmt.DB.NowFunc()
+									innerValue = stmt.DB.NowFunc()
 								}
 								isZero = false
 							}
 
 							if (ok || !isZero) && field.Updatable {
-								value = convertCustomType(value)
-								set = append(set, clause.Assignment{Column: clause.Column{Name: field.DBName}, Value: value})
+								innerValue = convertCustomType(innerValue)
+								set = append(set, clause.Assignment{Column: clause.Column{Name: field.DBName}, Value: innerValue})
 								assignField := field
 								if isDiffSchema {
 									if originField := stmt.Schema.LookUpField(dbName); originField != nil {
 										assignField = originField
 									}
 								}
-								assignValue(assignField, value)
+								assignValue(assignField, innerValue)
 							}
 						}
 					} else {
-						if value, isZero := field.ValueOf(stmt.Context, updatingValue); !isZero {
-							stmt.AddClause(clause.Where{Exprs: []clause.Expression{clause.Eq{Column: field.DBName, Value: value}}})
+						if innerValue, isZero := field.ValueOf(stmt.Context, updatingValue); !isZero {
+							stmt.AddClause(clause.Where{Exprs: []clause.Expression{clause.Eq{Column: field.DBName, Value: innerValue}}})
 						}
 					}
 				}

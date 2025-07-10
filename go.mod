@@ -2,14 +2,18 @@ module github.com/cmmoran/gorm-oracle
 
 go 1.24.4
 
-replace github.com/sijms/go-ora/v2 => github.com/cmmoran/go-ora/v2 v2.0.0-20250707124847-ef5d02df0628
+replace github.com/sijms/go-ora/v2 => github.com/cmmoran/go-ora/v2 v2.0.0-20250716142508-89a76be8f858
 
 require (
+	github.com/docker/go-connections v0.5.0
 	github.com/emirpasic/gods v1.18.1
+	github.com/gofrs/uuid/v3 v3.1.2
 	github.com/google/uuid v1.6.0
+	github.com/oklog/ulid/v2 v2.1.1
 	github.com/sijms/go-ora/v2 v2.9.0
 	github.com/stretchr/testify v1.10.0
 	github.com/testcontainers/testcontainers-go v0.37.0
+	golang.org/x/exp v0.0.0-20250711185948-6ae5c78190dc
 	gorm.io/gorm v1.30.0
 )
 
@@ -24,7 +28,6 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/docker v28.0.1+incompatible // indirect
-	github.com/docker/go-connections v0.5.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.8.2 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
