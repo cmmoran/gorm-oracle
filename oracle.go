@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
+	ouuid "github.com/cmmoran/gorm-oracle/uuid"
 	"github.com/google/uuid"
 	"github.com/sijms/go-ora/v2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
-	"gorm.io/gorm/logger"
 	"gorm.io/gorm/migrator"
 	"gorm.io/gorm/schema"
 )
@@ -238,6 +238,7 @@ func (d Dialector) Name() string {
 }
 
 func (d Dialector) Initialize(db *gorm.DB) (err error) {
+	schema.RegisterSerializer("uuid", ouuid.Serializer{})
 	db.NamingStrategy = Namer{
 		NamingStrategy: db.NamingStrategy,
 		CaseSensitive:  d.NamingCaseSensitive,
@@ -316,6 +317,9 @@ func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuil
 				returningExpression := returningClause.Expression.(clause.Returning)
 				if stmt.Schema != nil && len(stmt.Schema.Fields) > 0 {
 					for idx, f := range stmt.Schema.Fields {
+						if len(f.DBName) == 0 {
+							continue
+						}
 						if idx > 0 {
 							_ = builder.WriteByte(',')
 						}
@@ -371,15 +375,15 @@ func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuil
 							} else {
 								size = sf.Size
 							}
+							if i > 0 {
+								_, _ = stmt.WriteString(", ")
+							}
+							stmt.AddVar(stmt, go_ora.Out{
+								Dest: destPtr,
+								Size: size,
+							})
+							_, _ = stmt.WriteString(fmt.Sprintf("/*- %s -*/", col.Name))
 						}
-						if i > 0 {
-							_, _ = stmt.WriteString(", ")
-						}
-						stmt.AddVar(stmt, go_ora.Out{
-							Dest: destPtr,
-							Size: size,
-						})
-						_, _ = stmt.WriteString(fmt.Sprintf("/*- %s -*/", col.Name))
 					}
 				} else if set, sok := stmt.Clauses["SET"]; sok {
 					for idx, asn := range set.Expression.(clause.Set) {
@@ -626,7 +630,7 @@ func (d Dialector) Explain(sql string, vars ...interface{}) string {
 			vars[idx] = v.String
 		}
 	}
-	return logger.ExplainSQL(sql, numericPlaceholder, `'`, vars...)
+	return ExplainSQL(sql, numericPlaceholder, `'`, vars...)
 }
 
 func (d Dialector) DataTypeOf(field *schema.Field) string {
@@ -637,7 +641,7 @@ func (d Dialector) DataTypeOf(field *schema.Field) string {
 	}
 
 	// Handle google/uuid.UUID as RAW(16)
-	if field.FieldType == reflect.TypeOf(uuid.UUID{}) {
+	if field.FieldType == reflect.TypeFor[ouuid.UUID]() || field.FieldType == reflect.TypeFor[uuid.UUID]() {
 		return "RAW(16)"
 	}
 
