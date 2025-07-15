@@ -2,11 +2,12 @@ package oracle
 
 import (
 	"fmt"
+	"reflect"
+
 	"github.com/sijms/go-ora/v2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
-	"reflect"
 )
 
 func Create(db *gorm.DB) {
@@ -52,8 +53,7 @@ func Create(db *gorm.DB) {
 			stmt.AddClause(clause.Values{Columns: createValues.Columns, Values: [][]interface{}{createValues.Values[0]}})
 
 			stmt.Build("INSERT", "VALUES")
-			_ = outputInserted(db)
-			bindOracleCreateReturning(stmt)
+			outputInserted(db)
 		}
 
 		if !db.DryRun && db.Error == nil {
@@ -90,17 +90,30 @@ func Create(db *gorm.DB) {
 	}
 }
 
-// bindOracleCreateReturning is called _after_ GORM has built the SQL
-// but before execution; it appends sql.Out binders to stmt.Vars.
-func bindOracleCreateReturning(stmt *gorm.Statement) {
-	_, ok := stmt.Clauses["RETURNING"]
-	if !ok {
+func outputInserted(db *gorm.DB) {
+	stmt := db.Statement
+	stmtSchema := db.Statement.Schema
+	if stmtSchema == nil {
 		return
 	}
-
-	stmtSchema := stmt.Schema
-
+	lenDefaultValue := len(stmtSchema.FieldsWithDefaultDBValue)
+	if lenDefaultValue == 0 {
+		return
+	}
+	columns := make([]clause.Column, lenDefaultValue)
+	for idx, field := range stmtSchema.FieldsWithDefaultDBValue {
+		columns[idx] = clause.Column{Name: field.DBName}
+	}
+	_, _ = stmt.WriteString("/*- -*/")
+	_, _ = stmt.WriteString("RETURNING ")
+	for idx, f := range stmtSchema.FieldsWithDefaultDBValue {
+		if idx > 0 {
+			_ = stmt.WriteByte(',')
+		}
+		stmt.WriteQuoted(f.DBName)
+	}
 	_, _ = stmt.WriteString(" INTO ")
+
 	for idx, field := range stmtSchema.FieldsWithDefaultDBValue {
 		if idx > 0 {
 			_ = stmt.WriteByte(',')
@@ -113,40 +126,6 @@ func bindOracleCreateReturning(stmt *gorm.Statement) {
 		stmt.AddVar(stmt, outVar)
 		_, _ = stmt.WriteString(fmt.Sprintf(" /*-go_ora.Out{Dest:%s}-*/", field.Name))
 	}
-
-}
-
-func outputInserted(db *gorm.DB) (lenDefaultValue int) {
-	stmtSchema := db.Statement.Schema
-	if stmtSchema == nil {
-		return
-	}
-	lenDefaultValue = len(stmtSchema.FieldsWithDefaultDBValue)
-	if lenDefaultValue == 0 {
-		return
-	}
-	columns := make([]clause.Column, lenDefaultValue)
-	for idx, field := range stmtSchema.FieldsWithDefaultDBValue {
-		columns[idx] = clause.Column{Name: field.DBName}
-	}
-	db.Statement.AddClauseIfNotExists(clause.Returning{Columns: columns})
-	db.Statement.Build("RETURNING")
-
-	//_, _ = db.Statement.WriteString(" INTO ")
-	//for idx, field := range stmtSchema.FieldsWithDefaultDBValue {
-	//	if idx > 0 {
-	//		_ = db.Statement.WriteByte(',')
-	//	}
-	//
-	//	outVar := go_ora.Out{Dest: reflect.New(field.FieldType).Interface()}
-	//	if field.Size > 0 {
-	//		outVar.Size = field.Size
-	//	}
-	//	db.Statement.AddVar(db.Statement, outVar)
-	//}
-	//_, _ = db.Statement.WriteString(" /*-go_ora.Out{}-*/")
-
-	return
 }
 
 func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values) {

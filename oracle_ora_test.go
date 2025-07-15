@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/stretchr/testify/assert"
 	"io"
 	"log"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 const (

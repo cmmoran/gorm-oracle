@@ -2,6 +2,7 @@ package oracle
 
 import (
 	"database/sql/driver"
+	"encoding/hex"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -10,14 +11,17 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/cmmoran/gorm-oracle/uuid"
+	go_ora "github.com/sijms/go-ora/v2"
+
 	"gorm.io/gorm/utils"
 )
 
 const (
-	tmFmtWithMS = "2006-01-02 15:04:05.999"
-	tmFmtZero   = "0000-00-00 00:00:00"
-	nullStr     = "NULL"
+	tmFmtWithMicroTz = "2006-01-02 15:04:05.999999999Z07:00"
+	tmFmtWithMicro   = "2006-01-02 15:04:05.999999999"
+	tmFmtWithMS      = "2006-01-02 15:04:05.999"
+	tmFmtZero        = "0000-00-00 00:00:00.000000000"
+	nullStr          = "NULL"
 )
 
 func isPrintable(s string) bool {
@@ -63,23 +67,55 @@ func ExplainSQL(sql string, numericPlaceholder *regexp.Regexp, escaper string, a
 			if v.IsZero() {
 				vars[idx] = escaper + tmFmtZero + escaper
 			} else {
-				vars[idx] = escaper + v.Format(tmFmtWithMS) + escaper
+				vars[idx] = escaper + v.Format(tmFmtWithMicroTz) + escaper
 			}
 		case *time.Time:
 			if v != nil {
 				if v.IsZero() {
 					vars[idx] = escaper + tmFmtZero + escaper
 				} else {
-					vars[idx] = escaper + v.Format(tmFmtWithMS) + escaper
+					vars[idx] = escaper + v.Format(tmFmtWithMicroTz) + escaper
 				}
 			} else {
 				vars[idx] = nullStr
+			}
+		case go_ora.Out:
+			convertParams(v.Dest, idx)
+			reflectValue := reflect.ValueOf(v.Dest)
+			if v.Dest != nil {
+				if isSixteenByteType(reflectValue.Type()) {
+					b, _ := toBytesFrom16Array(v.Dest)
+					str := fmt.Sprintf("HEXTORAW('%s')", hex.EncodeToString(b[:]))
+					vars[idx] = escaper + fmt.Sprintf(" /*-go_ora.Out{Dest:%s,Size:%d}-*/", str, v.Size) + escaper
+				} else {
+					str := fmt.Sprintf("%v", v.Dest)
+					if tstr, ok := v.Dest.(time.Time); ok {
+						str = tstr.Format(tmFmtWithMicroTz)
+					}
+					if tstr, ok := v.Dest.(*time.Time); ok {
+						str = tstr.Format(tmFmtWithMicroTz)
+					}
+					if v.Size > 0 {
+						vars[idx] = escaper + fmt.Sprintf(" /*-go_ora.Out{Dest:%s,Size:%d}-*/", str, v.Size) + escaper
+					} else {
+						vars[idx] = escaper + fmt.Sprintf(" /*-go_ora.Out{Dest:%s}-*/", str) + escaper
+					}
+				}
 			}
 		case driver.Valuer:
 			reflectValue := reflect.ValueOf(v)
 			if v != nil && reflectValue.IsValid() && ((reflectValue.Kind() == reflect.Ptr && !reflectValue.IsNil()) || reflectValue.Kind() != reflect.Ptr) {
 				r, _ := v.Value()
-				convertParams(r, idx)
+				if r == nil {
+					vars[idx] = nullStr
+					return
+				}
+				rtype := reflect.TypeOf(r)
+				if isSixteenByteType(rtype) || (rtype.Kind() == reflect.Slice && rtype.Elem().Kind() == reflect.Uint8 && len(r.([]byte)) == 16) {
+					vars[idx] = fmt.Sprintf("HEXTORAW('%s')", hex.EncodeToString(r.([]byte)[:]))
+				} else {
+					convertParams(r, idx)
+				}
 			} else {
 				vars[idx] = nullStr
 			}
@@ -103,12 +139,12 @@ func ExplainSQL(sql string, numericPlaceholder *regexp.Regexp, escaper string, a
 			}
 		case []byte:
 			if len(v) == 16 { // @HACK: handle UUID-ish values
-				vars[idx] = escaper + uuid.From(v[:]).String() + escaper
+				vars[idx] = escaper + hex.EncodeToString(v[:]) + escaper
 			} else {
 				if s := string(v); isPrintable(s) {
 					vars[idx] = escaper + strings.ReplaceAll(s, escaper, escaper+escaper) + escaper
 				} else {
-					vars[idx] = escaper + "<binary>" + escaper
+					vars[idx] = escaper + fmt.Sprintf("<binary:%s>", hex.EncodeToString(v[:])) + escaper
 				}
 			}
 		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
