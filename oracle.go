@@ -163,20 +163,14 @@ func convertCustomType(val interface{}) interface{} {
 			typeName = reflect.TypeOf(ri).Name()
 		}
 	}
-	if isSixteenByteType(rv.Type()) {
-		if b, err := toBytesFrom16Array(ri); err != nil {
-			return val
-		} else {
-			return b[:]
-		}
-	} else if typeName == "DeletedAt" {
+	if typeName == "DeletedAt" {
 		// gorm.DeletedAt
 		if rv.IsZero() {
 			val = sql.NullTime{}
 		} else {
 			val = getTimeValue(ri.(gorm.DeletedAt).Time)
 		}
-	} else if m := rv.MethodByName("Time"); m.IsValid() && m.Type().NumIn() == 0 {
+	} else if m := rv.MethodByName("Time"); m.IsValid() && m.Type().NumIn() == 0 && !ty16Byte.AssignableTo(rv.Type()) {
 		// custom time type
 		for _, result := range m.Call([]reflect.Value{}) {
 			if reflect.TypeOf(result.Interface()).Name() == "Time" {
@@ -301,15 +295,6 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 		return
 	}
 	if err = db.Callback().Delete().Replace("gorm:delete", Delete(config)); err != nil {
-		return
-	}
-	if err = db.Callback().Query().Before("gorm:query").Register("gorm-oracle:replace_query_vars", FixOracleQueryVars); err != nil {
-		return
-	}
-	if err = db.Callback().Row().Before("gorm:row").Register("gorm-oracle:replace_row_query_vars", FixOracleQueryVars); err != nil {
-		return
-	}
-	if err = db.Callback().Raw().Before("gorm:raw").Register("gorm-oracle:replace_raw_query_vars", FixOracleQueryVars); err != nil {
 		return
 	}
 
@@ -644,26 +629,18 @@ func (d Dialector) Explain(sql string, vars ...interface{}) string {
 	return ExplainSQL(sql, numericPlaceholder, `'`, vars...)
 }
 
+var ty16Byte = reflect.TypeOf((*[16]byte)(nil)).Elem()
+
 // Check for types that match ~[16]byte
 func isSixteenByteType(t reflect.Type) bool {
-	// If it's a pointer, unwrap it:
-	if t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
 	// Now check for: array of length 16 whose element is byte
-	return t.Kind() == reflect.Array &&
-		t.Len() == 16 &&
-		t.Elem().Kind() == reflect.Uint8
+	return t.Kind() != reflect.Pointer && ty16Byte.AssignableTo(t) || t.Kind() == reflect.Pointer && ty16Byte.AssignableTo(t.Elem())
 }
 
 func (d Dialector) DataTypeOf(field *schema.Field) string {
 	delete(field.TagSettings, "RESTRICT")
-	booleanType := "NUMBER(1)"
-	if dbVer, _ := strconv.Atoi(strings.Split(d.DBVer, ".")[0]); dbVer >= 23 {
-		booleanType = "BOOLEAN"
-	}
 
-	// Handle google/uuid.UUID as RAW(16)
+	// Handle any uuid/ulid as RAW(16)
 	if isSixteenByteType(field.FieldType) {
 		return "RAW(16)"
 	}
@@ -671,6 +648,10 @@ func (d Dialector) DataTypeOf(field *schema.Field) string {
 	var sqlType string
 	switch field.DataType {
 	case schema.Bool:
+		booleanType := "NUMBER(1)"
+		if dbVer, _ := strconv.Atoi(strings.Split(d.DBVer, ".")[0]); dbVer >= 23 {
+			booleanType = "BOOLEAN"
+		}
 		sqlType = booleanType
 	case schema.Int, schema.Uint:
 		sqlType = "INTEGER"

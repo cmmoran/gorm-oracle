@@ -2,7 +2,7 @@ module github.com/cmmoran/gorm-oracle
 
 go 1.24.4
 
-replace github.com/sijms/go-ora/v2 => github.com/cmmoran/go-ora/v2 v2.0.0-20250712113541-52e3d8dc8c48
+replace github.com/sijms/go-ora/v2 => github.com/cmmoran/go-ora/v2 v2.0.0-20250716142508-89a76be8f858
 
 require (
 	github.com/docker/go-connections v0.5.0

@@ -81,25 +81,18 @@ func ExplainSQL(sql string, numericPlaceholder *regexp.Regexp, escaper string, a
 			}
 		case go_ora.Out:
 			convertParams(v.Dest, idx)
-			reflectValue := reflect.ValueOf(v.Dest)
 			if v.Dest != nil {
-				if isSixteenByteType(reflectValue.Type()) {
-					b, _ := toBytesFrom16Array(v.Dest)
-					str := fmt.Sprintf("HEXTORAW('%s')", hex.EncodeToString(b[:]))
+				str := fmt.Sprintf("%v", v.Dest)
+				if tstr, ok := v.Dest.(time.Time); ok {
+					str = tstr.Format(tmFmtWithMicroTz)
+				}
+				if tstr, ok := v.Dest.(*time.Time); ok {
+					str = tstr.Format(tmFmtWithMicroTz)
+				}
+				if v.Size > 0 {
 					vars[idx] = escaper + fmt.Sprintf(" /*-go_ora.Out{Dest:%s,Size:%d}-*/", str, v.Size) + escaper
 				} else {
-					str := fmt.Sprintf("%v", v.Dest)
-					if tstr, ok := v.Dest.(time.Time); ok {
-						str = tstr.Format(tmFmtWithMicroTz)
-					}
-					if tstr, ok := v.Dest.(*time.Time); ok {
-						str = tstr.Format(tmFmtWithMicroTz)
-					}
-					if v.Size > 0 {
-						vars[idx] = escaper + fmt.Sprintf(" /*-go_ora.Out{Dest:%s,Size:%d}-*/", str, v.Size) + escaper
-					} else {
-						vars[idx] = escaper + fmt.Sprintf(" /*-go_ora.Out{Dest:%s}-*/", str) + escaper
-					}
+					vars[idx] = escaper + fmt.Sprintf(" /*-go_ora.Out{Dest:%s}-*/", str) + escaper
 				}
 			}
 		case driver.Valuer:
@@ -110,12 +103,7 @@ func ExplainSQL(sql string, numericPlaceholder *regexp.Regexp, escaper string, a
 					vars[idx] = nullStr
 					return
 				}
-				rtype := reflect.TypeOf(r)
-				if isSixteenByteType(rtype) || (rtype.Kind() == reflect.Slice && rtype.Elem().Kind() == reflect.Uint8 && len(r.([]byte)) == 16) {
-					vars[idx] = fmt.Sprintf("HEXTORAW('%s')", hex.EncodeToString(r.([]byte)[:]))
-				} else {
-					convertParams(r, idx)
-				}
+				convertParams(r, idx)
 			} else {
 				vars[idx] = nullStr
 			}
