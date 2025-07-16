@@ -489,38 +489,27 @@ func (m Migrator) CreateIndex(value interface{}, name string) error {
 				)
 			}
 
-			// 2) Grab the table name (already a string on stmt)
-			tableName := stmt.Table
-
-			// 3) Assemble the DDL
-			sb := &strings.Builder{}
-			sb.WriteString("CREATE ")
+			create := "CREATE "
 			if idx.Class != "" {
-				sb.WriteString(idx.Class)
-				sb.WriteString(" ")
+				create = fmt.Sprintf("%s %s ", create, idx.Class)
 			}
-			sb.WriteString("INDEX ")
-			sb.WriteString(idx.Name)
-			sb.WriteString(" ON ")
-			sb.WriteString(tableName)
-			sb.WriteString(" (")
-			sb.WriteString(strings.Join(exprs, ", "))
-			sb.WriteString(")")
-
+			using := ""
 			if idx.Type != "" {
-				sb.WriteString(" USING ")
-				sb.WriteString(idx.Type)
+				using = fmt.Sprintf(" USING %s ", idx.Type)
 			}
+			comment := ""
 			if idx.Comment != "" {
-				sb.WriteString(fmt.Sprintf(" COMMENT '%s'", idx.Comment))
+				comment = fmt.Sprintf(" COMMENT '%s'", idx.Comment)
 			}
+			opt := ""
 			if idx.Option != "" {
-				sb.WriteString(" ")
-				sb.WriteString(idx.Option)
+				opt = fmt.Sprintf(" %s", idx.Option)
 			}
 
-			// 4) Execute
-			return m.DB.Exec(sb.String()).Error
+			str := fmt.Sprintf(`%sINDEX %s ON %s (%s) %s%s%s`, create, stmt.Quote(idx.Name), stmt.Quote(stmt.Table), strings.Join(exprs, ","), using, comment, opt)
+
+			return m.DB.Exec(str).Error
+
 		}
 		return nil
 	})
