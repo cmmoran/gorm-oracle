@@ -778,3 +778,67 @@ func toBytesFrom16Array(val interface{}) ([]byte, error) {
 	}
 	return out, nil
 }
+
+var skipTypes = map[reflect.Type]struct{}{
+	reflect.TypeOf((*time.Time)(nil)): {},
+}
+
+func instantiateNilPointers(root interface{}) {
+	v := reflect.ValueOf(root)
+	if v.Kind() != reflect.Ptr || v.IsNil() {
+		// must be a non-nil pointer to a struct
+		return
+	}
+	visited := make(map[uintptr]struct{})
+	_instantiateNilPointers(v, visited)
+}
+
+func _instantiateNilPointers(v reflect.Value, visited map[uintptr]struct{}) {
+	// 1) Drill through pointers, but short-circuit on nil or already-seen
+	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return
+		}
+		addr := v.Pointer()
+		if _, seen := visited[addr]; seen {
+			// we’ve already initialized this struct – avoid a cycle
+			return
+		}
+		visited[addr] = struct{}{}
+		v = v.Elem()
+	}
+
+	// 2) Only structs from here on
+	if v.Kind() != reflect.Struct {
+		return
+	}
+
+	t := v.Type()
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Field(i)
+		sf := t.Field(i)
+
+		// skip unexported
+		if sf.PkgPath != "" {
+			continue
+		}
+
+		switch field.Kind() {
+		case reflect.Ptr:
+			// skip certain pointer types (e.g. time.Time, gorm.DeletedAt, etc.)
+			if _, skip := skipTypes[field.Type()]; skip {
+				continue
+			}
+			if field.IsNil() && field.CanSet() {
+				// allocate the struct it points to
+				field.Set(reflect.New(field.Type().Elem()))
+			}
+			// recurse into it
+			_instantiateNilPointers(field, visited)
+
+		case reflect.Struct:
+			// recurse into embedded structs
+			_instantiateNilPointers(field, visited)
+		}
+	}
+}

@@ -3,7 +3,6 @@ package oracle
 import (
 	"reflect"
 	"sort"
-	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
@@ -65,53 +64,6 @@ func Update(config *callbacks.Config) func(db *gorm.DB) {
 				stmt.Result.Result = result
 				stmt.Result.RowsAffected = db.RowsAffected
 			}
-		}
-	}
-}
-
-var skipTypes = map[reflect.Type]struct{}{
-	reflect.TypeOf((*time.Time)(nil)): {},
-}
-
-func instantiateNilPointers(v reflect.Value) {
-	if v.Kind() == reflect.Ptr {
-		if v.IsNil() {
-			// Don't preallocate root pointer here — expect caller to pass a pointer-to-struct
-			return
-		}
-		v = v.Elem()
-	}
-
-	if v.Kind() != reflect.Struct {
-		return
-	}
-
-	typ := v.Type()
-	for i := 0; i < v.NumField(); i++ {
-		field := v.Field(i)
-		fieldType := typ.Field(i)
-
-		// Skip unexported fields
-		if fieldType.PkgPath != "" {
-			continue
-		}
-
-		switch field.Kind() {
-		case reflect.Ptr:
-			// Skip certain types
-			if _, skip := skipTypes[field.Type()]; skip {
-				continue
-			}
-			if field.IsNil() {
-				// Instantiate pointer
-				field.Set(reflect.New(field.Type().Elem()))
-			}
-			// Recurse
-			instantiateNilPointers(field)
-
-		case reflect.Struct:
-			instantiateNilPointers(field)
-		default:
 		}
 	}
 }
