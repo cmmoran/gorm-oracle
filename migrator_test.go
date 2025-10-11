@@ -106,6 +106,24 @@ type TestTablePartialIndex struct {
 	Sex  string `gorm:"column:sex;type:char(1);check:chk_there_can_be_only_two,lower(sex)='m' or lower(sex)='f';index:uni_there_can_be_only_two,unique,where:lower(sex) in ('m'\\,'f');"`
 }
 
+type TestTableCaseSensitive struct {
+	gorm.Model
+	Name string `gorm:"column:\"name\";size:50;comment:User Name"`
+}
+
+func (TestTableCaseSensitive) TableName() string {
+	return "\"test_table_case_sensitive\""
+}
+
+type TestTableCaseSensitiveRegular struct {
+	gorm.Model
+	Name string `gorm:"column:name;size:50;comment:User Name"`
+}
+
+func (TestTableCaseSensitiveRegular) TableName() string {
+	return "test_table_case_sensitive"
+}
+
 // TestTableUser Test User Information Table Model
 type TestTableUser struct {
 	ID   uint64 `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`

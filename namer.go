@@ -66,7 +66,7 @@ func (ns NamingStrategy) SchemaName(table string) (name string) {
 }
 
 // ColumnName convert string to column name
-func (ns NamingStrategy) ColumnName(table, column string) (name string) {
+func (ns NamingStrategy) ColumnName(_, column string) (name string) {
 	return ns.normalizeQualifiedIdent(ns.applyNameReplacer(column))
 }
 
@@ -77,9 +77,9 @@ func (ns NamingStrategy) JoinTableName(str string) (name string) {
 		prefix = ns.TablePrefix + "_"
 	}
 
-	name = prefix + ns.applyNameReplacer(str)
+	name = prefix + ns.applyNameReplacer(str, true)
 	if !ns.SingularTable {
-		name = prefix + inflection.Plural(ns.applyNameReplacer(str))
+		name = prefix + inflection.Plural(ns.applyNameReplacer(str, true))
 	}
 
 	return ns.normalizeQualifiedIdent(name)
@@ -87,22 +87,40 @@ func (ns NamingStrategy) JoinTableName(str string) (name string) {
 
 // RelationshipFKName generate fk name for relation
 func (ns NamingStrategy) RelationshipFKName(rel schema.Relationship) (name string) {
-	return ns.formatName("fk", rel.Schema.Table, ns.applyNameReplacer(rel.Name))
+	table := rel.Schema.Table
+	if IsQuoted(table) {
+		table = strings.Trim(table, `"`)
+		return quote(ns.formatName("fk", table, ns.applyNameReplacer(rel.Name, true)))
+	}
+
+	return ns.normalizeQualifiedIdent(ns.formatName("fk", table, ns.applyNameReplacer(rel.Name, true)))
 }
 
 // CheckerName generate checker name
 func (ns NamingStrategy) CheckerName(table, column string) (name string) {
-	return ns.formatName("chk", table, column)
+	if IsQuoted(table) {
+		table = strings.Trim(table, `"`)
+		return quote(ns.formatName("chk", table, ns.applyNameReplacer(column, true)))
+	}
+	return ns.normalizeQualifiedIdent(ns.formatName("chk", table, ns.applyNameReplacer(column, true)))
 }
 
 // IndexName generate index name
 func (ns NamingStrategy) IndexName(table, column string) (name string) {
-	return ns.formatName("idx", table, ns.applyNameReplacer(column))
+	if IsQuoted(table) {
+		table = strings.Trim(table, `"`)
+		return quote(ns.formatName("idx", table, ns.applyNameReplacer(column, true)))
+	}
+	return ns.normalizeQualifiedIdent(ns.formatName("idx", table, ns.applyNameReplacer(column, true)))
 }
 
 // UniqueName generate unique constraint name
 func (ns NamingStrategy) UniqueName(table, column string) (name string) {
-	return ns.formatName("uni", table, ns.applyNameReplacer(column))
+	if IsQuoted(table) {
+		table = strings.Trim(table, `"`)
+		return quote(ns.formatName("uni", table, ns.applyNameReplacer(column, true)))
+	}
+	return ns.normalizeQualifiedIdent(ns.formatName("uni", table, ns.applyNameReplacer(column, true)))
 }
 
 func (ns NamingStrategy) formatName(prefix, table, name string) string {
@@ -121,7 +139,7 @@ func (ns NamingStrategy) formatName(prefix, table, name string) string {
 
 		formattedName = formattedName[0:ns.IdentifierMaxLength-8] + hex.EncodeToString(bs)[:8]
 	}
-	return ns.normalizeQualifiedIdent(formattedName)
+	return formattedName
 }
 
 var (
@@ -135,16 +153,20 @@ func init() {
 	}
 }
 
-func (ns NamingStrategy) applyNameReplacer(name string) string {
+func (ns NamingStrategy) applyNameReplacer(name string, unquote ...any) string {
+	removeQuotes := len(unquote) > 0
+
 	if name == "" {
 		return ""
 	}
+	if IsQuoted(name) {
+		if removeQuotes {
+			name = name[1 : len(name)-1]
+		}
+		return name
+	}
 	if IsReservedWord(name) {
 		name = quoteIdent(name)
-	}
-
-	if strings.HasPrefix(name, `"`) && strings.HasSuffix(name, `"`) {
-		name = name[1 : len(name)-1]
 	}
 
 	if ns.NameReplacer != nil {
@@ -258,6 +280,14 @@ func quoteIdent(s string) string {
 		return s
 	}
 	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
+
+func quote(s string) string {
+	if IsQuoted(s) {
+		return s
+	}
+	s = strings.ReplaceAll(s, `"`, "")
+	return fmt.Sprintf(`"%s"`, s)
 }
 
 // IsQuoted returns true if s is already a double-quoted SQL identifier.

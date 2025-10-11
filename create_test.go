@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestMergeCreate(t *testing.T) {
@@ -70,6 +72,26 @@ func TestMergeCreate(t *testing.T) {
 		dataJsonBytes, _ := json.MarshalIndent(data, "", "  ")
 		t.Logf("result: %s", dataJsonBytes)
 	})
+}
+
+func TestCreateCaseSensitive(t *testing.T) {
+	db, err := dbNamingCase, dbErrors[0]
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+	_ = db.Migrator().DropTable(TestTableCaseSensitive{})
+	err = db.WithContext(currentContext()).Migrator().AutoMigrate(TestTableCaseSensitive{})
+
+	require.NoError(t, err, "expecting no error")
+
+	_ = db.Migrator().DropTable(TestTableCaseSensitiveRegular{})
+	err = db.WithContext(currentContext()).Migrator().AutoMigrate(TestTableCaseSensitiveRegular{})
+
+	require.NoError(t, err, "expecting no error")
 }
 
 type TestTableUserUnique struct {

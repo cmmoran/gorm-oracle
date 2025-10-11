@@ -263,6 +263,9 @@ func (m Migrator) HasTable(value interface{}) bool {
 		if ownerName, tableName := m.getSchemaTable(stmt); ownerName != "" {
 			return m.DB.Raw("SELECT COUNT(*) FROM ALL_TABLES WHERE OWNER = ? and TABLE_NAME = ?", ownerName, tableName).Row().Scan(&count)
 		} else {
+			if IsQuoted(tableName) {
+				tableName = strings.ReplaceAll(tableName, `"`, "")
+			}
 			return m.DB.Raw("SELECT COUNT(*) FROM USER_TABLES WHERE TABLE_NAME = ?", tableName).Row().Scan(&count)
 		}
 	})
