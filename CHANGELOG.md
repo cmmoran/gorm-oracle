@@ -1,3 +1,12 @@
+## [0.2.3](https://github.com/cmmoran/gorm-oracle/compare/v0.2.2...v0.2.3) (2025-10-11)
+
+
+### Bug Fixes
+
+* quoted table and column values shoudl now properly work within index, unique, foreign key, and constraints ([54699d3](https://github.com/cmmoran/gorm-oracle/commit/54699d30a310bd71671af0e6ec8b2c527c53e7a8))
+
+
+
 ## [0.2.2](https://github.com/cmmoran/gorm-oracle/compare/v0.2.1...v0.2.2) (2025-10-11)
 
 
@@ -32,10 +41,6 @@
 ### Bug Fixes
 
 * support `timestamp without time zone` -> `timestamp(6)` ([2905406](https://github.com/cmmoran/gorm-oracle/commit/2905406c6e4d1b61114c236256cd3f7281fff5a2))
-
-
-
-# 0.1.0 (2025-07-03)
 
 
 
