@@ -28,8 +28,13 @@ type Config struct {
 	DefaultStringSize uint
 	DBVer             string
 
-	IgnoreCase          bool // warning: may cause performance issues
+	// IgnoreCase applies to data; not identifiers
+	IgnoreCase bool // warning: may cause performance issues
+	// NamingCaseSensitive applies to identifiers
 	NamingCaseSensitive bool // whether naming is case-sensitive
+	// PreferredCase determines the strategy for naming identifiers; Note that setting PreferredCase to CamelCase or SnakeCase will override the NamingCaseSensitive setting; ScreamingSnakeCase is the default and works with both case-sensitive and case-insensitive naming
+	PreferedCase Case
+
 	// whether VARCHAR type size is character length, defaulting to byte length
 	VarcharSizeIsCharLength bool
 
@@ -41,6 +46,8 @@ type Config struct {
 	// use this timezone for the session
 	SessionTimezone string
 	sessionLocation *time.Location
+
+	namingStrategy *NamingStrategy
 }
 
 // Dialector implement GORM database dialector
@@ -242,10 +249,15 @@ func (d Dialector) Name() string {
 }
 
 func (d Dialector) Initialize(db *gorm.DB) (err error) {
-	db.NamingStrategy = Namer{
-		NamingStrategy: db.NamingStrategy,
-		CaseSensitive:  d.NamingCaseSensitive,
+	if d.PreferedCase == SnakeCase || d.PreferedCase == CamelCase {
+		d.NamingCaseSensitive = true
 	}
+	d.namingStrategy = &NamingStrategy{
+		NamingCaseSensitive: d.NamingCaseSensitive,
+		PreferredCase:       d.PreferedCase,
+	}
+	db.NamingStrategy = d.namingStrategy
+
 	d.DefaultStringSize = 1024
 
 	// register callbacks
@@ -297,6 +309,9 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 	if err = db.Callback().Delete().Replace("gorm:delete", Delete(config)); err != nil {
 		return
 	}
+	if err = db.Callback().Query().Replace("gorm:query", Query); err != nil {
+		return
+	}
 
 	for k, v := range d.ClauseBuilders() {
 		db.ClauseBuilders[k] = v
@@ -304,12 +319,19 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 	return
 }
 
-func stableDbNameFields(m *schema.Schema, cols []clause.Column) []*schema.Field {
+func (d Dialector) stableDbNameFields(m *schema.Schema, cols []clause.Column) []*schema.Field {
 	if m == nil {
 		return nil
 	}
 	ordered := make([]*schema.Field, 0, len(m.Fields))
 	for _, f := range m.Fields {
+		if fld := m.LookUpField(f.Name); fld != nil {
+			if len(cols) == 0 || slices.ContainsFunc(cols, func(c clause.Column) bool {
+				return c.Name == fld.DBName
+			}) {
+				ordered = append(ordered, fld)
+			}
+		}
 		if fld, ok := m.FieldsByDBName[f.DBName]; ok && (len(cols) == 0 || slices.ContainsFunc(cols, func(c clause.Column) bool {
 			return c.Name == fld.DBName
 		})) {
@@ -337,7 +359,7 @@ func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuil
 
 			returningClause := stmt.Clauses["RETURNING"]
 			rCols := returningClause.Expression.(clause.Returning).Columns
-			returningFields := stableDbNameFields(stmt.Schema, rCols)
+			returningFields := d.stableDbNameFields(stmt.Schema, rCols)
 			wasEmpty := len(returningFields) == 0
 			appendReturningColumns := func(colName string) {
 				if wasEmpty {
@@ -551,6 +573,7 @@ func (d Dialector) Migrator(db *gorm.DB) gorm.Migrator {
 				CreateIndexAfterCreateTable: true,
 			},
 		},
+		namingStrategy: d.namingStrategy,
 	}
 }
 
@@ -559,57 +582,71 @@ func (d Dialector) BindVarTo(writer clause.Writer, stmt *gorm.Statement, _ inter
 	_, _ = writer.WriteString(strconv.Itoa(len(stmt.Vars)))
 }
 
-func (d Dialector) QuoteTo(writer clause.Writer, str string) {
-	if d.NamingCaseSensitive && str != "" {
-		var (
-			underQuoted, selfQuoted bool
-			continuousBacktick      int8
-			shiftDelimiter          int8
-		)
-
-		for _, v := range []byte(str) {
-			switch v {
-			case '"':
-				continuousBacktick++
-				if continuousBacktick == 2 {
-					_, _ = writer.WriteString(`""`)
-					continuousBacktick = 0
-				}
-			case '.':
-				if continuousBacktick > 0 || !selfQuoted {
-					shiftDelimiter = 0
-					underQuoted = false
-					continuousBacktick = 0
-					_ = writer.WriteByte('"')
-				}
-				_ = writer.WriteByte(v)
-				continue
-			default:
-				if shiftDelimiter-continuousBacktick <= 0 && !underQuoted {
-					_ = writer.WriteByte('"')
-					underQuoted = true
-					if selfQuoted = continuousBacktick > 0; selfQuoted {
-						continuousBacktick -= 1
-					}
-				}
-
-				for ; continuousBacktick > 0; continuousBacktick -= 1 {
-					_, _ = writer.WriteString(`""`)
-				}
-
-				_ = writer.WriteByte(v)
-			}
-			shiftDelimiter++
-		}
-
-		if continuousBacktick > 0 && !selfQuoted {
-			_, _ = writer.WriteString(`""`)
-		}
-		_ = writer.WriteByte('"')
-	} else {
-		_, _ = writer.WriteString(str)
+// QuoteTo writes a SQL-quoted identifier (or dotted path) to writer.
+// When NamingCaseSensitive is true, every dot-separated part is wrapped
+// in double quotes and any internal `"` are escaped as `""`.
+// Existing outer quotes around parts are normalized (removed then re-applied).
+func (d Dialector) QuoteTo(w clause.Writer, s string) {
+	if s == "" {
+		_, _ = w.WriteString(s)
+		return
 	}
+
+	_, _ = w.WriteString(d.namingStrategy.normalizeQualifiedIdent(s))
+
+	//parts := splitIdentParts(s) // split on '.' outside of quotes
+	//
+	//for i, p := range parts {
+	//	// Strip surrounding quotes if present (normalize)
+	//	if len(p) >= 2 && p[0] == '"' && p[len(p)-1] == '"' {
+	//		p = p[1 : len(p)-1]
+	//	}
+	//	// Escape internal quotes
+	//	p = strings.ReplaceAll(p, `"`, `""`)
+	//
+	//	_, _ = w.WriteString(`"`)
+	//	p = d.namingStrategy.normalizeQualifiedIdent(p)
+	//	_, _ = w.WriteString(p)
+	//	_, _ = w.WriteString(`"`)
+	//
+	//	if i < len(parts)-1 {
+	//		_ = w.WriteByte('.')
+	//	}
+	//}
 }
+
+// splitIdentParts splits s by '.' that are not inside double quotes.
+// It preserves empty parts (e.g., leading/trailing dots) to match input shape.
+//func splitIdentParts(s string) []string {
+//	var parts []string
+//	start := 0
+//	inQuote := false
+//	quoteRun := 0 // counts consecutive `"` to handle doubled quotes
+//
+//	for i := 0; i < len(s); i++ {
+//		c := s[i]
+//		if c == '"' {
+//			quoteRun++
+//			if quoteRun == 2 {
+//				// doubled quote "" inside a quoted segment -> stays inside
+//				quoteRun = 0
+//			}
+//			// toggle inQuote only on a single `"` boundary
+//			if quoteRun == 1 {
+//				inQuote = !inQuote
+//			}
+//			continue
+//		}
+//		quoteRun = 0
+//
+//		if c == '.' && !inQuote {
+//			parts = append(parts, s[start:i])
+//			start = i + 1
+//		}
+//	}
+//	parts = append(parts, s[start:])
+//	return parts
+//}
 
 var numericPlaceholder = regexp.MustCompile(`:(\d+)`)
 
@@ -841,4 +878,23 @@ func _instantiateNilPointers(v reflect.Value, visited map[uintptr]struct{}) {
 			_instantiateNilPointers(field, visited)
 		}
 	}
+}
+
+func runWithValue(db *gorm.DB, value interface{}, fc func(*gorm.Statement) error) error {
+	if db == nil {
+		return errors.New("db is nil")
+	}
+	stmt := &gorm.Statement{DB: db}
+	if db.Statement != nil {
+		stmt.Table = db.Statement.Table
+		stmt.TableExpr = db.Statement.TableExpr
+	}
+
+	if table, ok := value.(string); ok {
+		stmt.Table = table
+	} else if err := stmt.ParseWithSpecialTableName(value, stmt.Table); err != nil {
+		return err
+	}
+
+	return fc(stmt)
 }

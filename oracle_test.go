@@ -64,7 +64,7 @@ func TestMain(m *testing.M) {
 	if _, ok := os.LookupEnv("GORM_NO_DB"); !ok {
 		startOracleDatabase(t)
 		ctx := currentContext()
-		dbNamingCase = setupOracleDatabase(t, ctx, true, true, true)
+		dbNamingCase = setupOracleDatabase(t, ctx, false, true, true)
 		dbIgnoreCase = setupOracleDatabase(t, ctx, true, false, true)
 		defer func() {
 			if _, oraContainer := findDbContextInfo(ctx); oraContainer != nil {
@@ -110,6 +110,8 @@ func startOracleDatabase(t require.TestingT) {
 		if len(service) == 0 {
 			service = "FREEPDB1"
 		}
+	} else if service == "" {
+		service = "FREEPDB1"
 	}
 	var err error
 	if _, ok := os.LookupEnv("GORM_ORA_SKIP_CONTAINER"); !ok {
@@ -117,7 +119,11 @@ func startOracleDatabase(t require.TestingT) {
 			Image:        "gvenzl/oracle-free:slim",
 			ExposedPorts: []string{"1521/tcp"},
 			Env:          env,
-			WaitingFor:   wait.ForLog("Completed: ALTER DATABASE OPEN").WithStartupTimeout(2 * time.Minute),
+			WaitingFor: wait.ForAll(
+				wait.ForLog("DATABASE IS READY TO USE!").WithStartupTimeout(8*time.Minute),
+				wait.ForListeningPort("1521/tcp").WithStartupTimeout(8*time.Minute),
+			),
+			//WaitingFor:   wait.ForLog("Completed: ALTER DATABASE OPEN").WithStartupTimeout(2 * time.Minute),
 		}
 
 		var oraContainer tc.Container
@@ -133,6 +139,11 @@ func startOracleDatabase(t require.TestingT) {
 		)
 		host, err = oraContainer.Host(ctx)
 		require.NoError(t, err, "Failed to get container host")
+		if envHost, envHostFound := os.LookupEnv("GORM_ORA_HOST"); envHostFound && host == "localhost" && envHost != "localhost" {
+			host = envHost
+			//} else if host == "localhost" {
+			//	host = "127.0.0.1"
+		}
 
 		port, err = oraContainer.MappedPort(ctx, "1521")
 		require.NoError(t, err, "Failed to get mapped port")
@@ -250,7 +261,7 @@ func setupOracleDatabase(t require.TestingT, ctx context.Context, ignoreCase, na
 			return tt
 		},
 	})
-	require.NoError(t, err)
+	require.NoErrorf(t, err, "Failed to open database %+v", err)
 
 	return db
 }
@@ -310,9 +321,9 @@ func (TestTableULID) TableName() string {
 }
 
 type TestTableGUUID struct {
-	ID   uint64    `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
-	Name string    `gorm:"column:name;size:50;comment:User Name" json:"name"`
-	User uuid.UUID `gorm:"column:user;type:uuid;comment:User UUID" json:"user"`
+	ID   uint64    `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
+	Name string    `gorm:"size:50;comment:User Name" json:"name"`
+	User uuid.UUID `gorm:"comment:User UUID" json:"user"`
 }
 
 func (TestTableGUUID) TableName() string {
@@ -390,20 +401,28 @@ func TestGUUIDType(t *testing.T) {
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValuesf(t, result.RowsAffected, int64(2), "expecting two records created")
 	require.EqualValuesf(t, test0.ID, int64(1), "expecting ID to be 1")
-	test0 = &TestTableGUUID{}
-	result = db.First(test0)
+	test1 := &TestTableGUUID{
+		ID: test0.ID,
+	}
+	result = db.Find(test1)
 	require.NoError(t, result.Error, "expecting no error")
-	require.EqualValuesf(t, test0.ID, int64(1), "expecting ID to be 1")
-	require.EqualValuesf(t, u, test0.User, "expecting User to match")
-
-	test1 := &TestTableGUUID{}
-	result = db.Model(test1).Where(`"user" = ?`, test00.User).Scan(test1)
-	require.NoError(t, result.Error, "expecting no error")
-	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
-	require.EqualValuesf(t, test00.User, test1.User, "expecting User to match")
+	require.EqualValuesf(t, test1.ID, int64(1), "expecting ID to be 1")
+	require.EqualValuesf(t, u, test1.User, "expecting User to match")
 
 	test2 := &TestTableGUUID{}
-	result = db.Raw(`SELECT * FROM "test_user_uuid" WHERE "user" = ?`, test00.User).Scan(test2)
+	result = db.Model(test2).Where(&TestTableGUUID{User: test00.User}).First(test2)
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
+	require.EqualValuesf(t, test00.User, test2.User, "expecting User to match")
+
+	test3 := &TestTableGUUID{}
+	result = db.Model(test3).Where(`"USER" = ?`, test00.User).First(test3)
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
+	require.EqualValuesf(t, test00.User, test3.User, "expecting User to match")
+
+	test4 := &TestTableGUUID{}
+	result = db.Raw(`SELECT * FROM test_user_uuid WHERE user = ?`, test00.User).Scan(test4)
 	require.NoError(t, result.Error, "expecting no error")
 }
 
@@ -439,13 +458,13 @@ func TestGofrsUUIDType(t *testing.T) {
 	require.EqualValuesf(t, u, test0.User, "expecting User to match")
 
 	test1 := &TestTableGofrsUUID{}
-	result = db.Model(test1).Where(`"user" = ?`, test00.User).Scan(test1)
+	result = db.Model(test1).Where(`"USER" = ?`, test00.User).Scan(test1)
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
 	require.EqualValuesf(t, test00.User, test1.User, "expecting User to match")
 
 	test2 := &TestTableGofrsUUID{}
-	result = db.Raw(`SELECT * FROM "test_user_uuid" WHERE "user" = ?`, test00.User).Scan(test2)
+	result = db.Raw(`SELECT * FROM test_user_uuid WHERE "USER" = ?`, test00.User).Scan(test2)
 	require.NoError(t, result.Error, "expecting no error")
 
 	test3 := &TestTableGofrsUUID{
@@ -455,11 +474,11 @@ func TestGofrsUUIDType(t *testing.T) {
 	result = db.Create(test3)
 	require.NoError(t, result.Error, "expecting no error")
 	must := gofrs.Must(gofrs.NewV4())
-	result = db.Exec(`UPDATE "test_user_uuid" SET "user" = ? WHERE "user" = ?`, must, test00.User)
+	result = db.Exec(`UPDATE test_user_uuid SET "USER" = ? WHERE "USER" = ?`, must, test00.User)
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValuesf(t, result.RowsAffected, int64(1), "expecting one row affected")
 	test4 := &TestTableGofrsUUID{}
-	result = db.Model(test4).Where(`"user" = ?`, must).Scan(test4)
+	result = db.Model(test4).Where(`"USER" = ?`, must).Scan(test4)
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValuesf(t, must, test4.User, "expecting User to match")
 }
@@ -496,13 +515,13 @@ func TestULIDType(t *testing.T) {
 	require.EqualValuesf(t, u, test0.User, "expecting User to match")
 
 	test1 := &TestTableULID{}
-	result = db.Model(test1).Where(`"user" = ?`, test00.User).Scan(test1)
+	result = db.Model(test1).Where(`"USER" = ?`, test00.User).Scan(test1)
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
 	require.EqualValuesf(t, test00.User, test1.User, "expecting User to match")
 
 	test2 := &TestTableULID{}
-	result = db.Raw(`SELECT * FROM "test_user_ulid" WHERE "user" = ?`, test00.User).Scan(test2)
+	result = db.Raw(`SELECT * FROM test_user_ulid WHERE "USER" = ?`, test00.User).Scan(test2)
 	require.NoError(t, result.Error, "expecting no error")
 }
 
@@ -539,7 +558,7 @@ func TestTimeTypes(t *testing.T) {
 	require.EqualValuesf(t, test0Time, test0.Time, "expecting Time to match")
 
 	test1 := &TestTableTime{}
-	result = db.Model(test1).Where(`"time" = ?`, test0Time).Scan(test1)
+	result = db.Model(test1).Where(`time = ?`, test0Time).Scan(test1)
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
 	require.EqualValuesf(t, test0Time, test1.Time, "expecting Time to match")
@@ -551,6 +570,7 @@ func TestReturningIntoUUID(t *testing.T) {
 		t.Log("db is nil!")
 		return
 	}
+	db = db.WithContext(currentContext())
 	_ = db.Exec(`"DROP TABLE "test_user_uuid" cascade constraints"`)
 	err := db.WithContext(currentContext()).Migrator().AutoMigrate(TestTableUUID{})
 	require.NoError(t, err, "expecting no error")
@@ -561,7 +581,10 @@ func TestReturningIntoUUID(t *testing.T) {
 	}
 	result := db.WithContext(currentContext()).Create(model)
 	require.NoError(t, result.Error, "expecting no error")
-	result = db.WithContext(currentContext()).First(model)
+	model = &TestTableUUID{
+		ID: model.ID,
+	}
+	result = db.WithContext(currentContext()).Find(model)
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValuesf(t, u, model.User, "expecting model User to be %s", u.String())
 }
@@ -588,12 +611,26 @@ func TestDeleteReturningIntoUUID(t *testing.T) {
 	require.EqualValuesf(t, u, model.User, "expecting model User to be %s", u.String())
 	id := model.ID
 	model = &TestTableUUID{}
-	result = db.Model(model).Where(`"id" = ?`, id).Delete(model)
+	result = db.Model(model).Where(`id = ?`, id).Delete(model)
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValuesf(t, 1, result.RowsAffected, "expecting 1 row affected")
 	result = db.Create(model)
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValuesf(t, 1, result.RowsAffected, "expecting 1 row affected")
+}
+
+func TestPartialIndex(t *testing.T) {
+	db := dbNamingCase
+
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+
+	_ = db.Migrator().DropTable(TestTablePartialIndex{})
+	err := db.WithContext(currentContext()).Migrator().AutoMigrate(TestTablePartialIndex{})
+
+	require.NoError(t, err, "expecting no error")
 }
 
 func TestReturningInto(t *testing.T) {
@@ -633,15 +670,16 @@ func TestReturningInto(t *testing.T) {
 	assert.NoError(t, res.Error, "expecting no error updating Name")
 	assert.EqualValuesf(t, "Alice", model.Name, "expecting Name to be 'Alice' was %s", model.Name)
 
-	res = db.WithContext(currentContext()).Model(model).Updates(map[string]any{"name": "Zulu", "user_type": clause.Expr{SQL: "\"user_type\" + 1"}})
-	assert.NoError(t, res.Error, "expecting no error updating Name")
-	assert.EqualValuesf(t, "Zulu", model.Name, "expecting Name to be 'Zulu' was %s", model.Name)
+	// Updates will not update the model unless the Returning clause is used
+	res = db.WithContext(currentContext()).Model(model).Updates(map[string]any{"name": "Zulu", "user_type": clause.Expr{SQL: "user_type + 1"}})
+	assert.NoError(t, res.Error, "expecting no error updating name and user_type")
+	assert.EqualValuesf(t, "Alice", model.Name, "expecting Name to be 'Alice' was %s", model.Name)
 	assert.EqualValuesf(t, 1, model.UserType, "expecting UserType to be unchanged at 1 was %d", model.UserType)
 	res = db.WithContext(currentContext()).First(model)
 	assert.NoError(t, res.Error, "expecting no error re-finding first")
 	assert.EqualValuesf(t, "Zulu", model.Name, "expecting Name to be 'Zulu' was %s", model.Name)
 	assert.EqualValuesf(t, 2, model.UserType, "expecting UserType to be refreshed to persisted value at 2 was %d", model.UserType)
-	res = db.WithContext(currentContext()).Model(model).Clauses(clause.Returning{}).Updates(map[string]any{"name": "Zulu2", "user_type": clause.Expr{SQL: "\"user_type\" + 1"}})
+	res = db.WithContext(currentContext()).Model(model).Clauses(clause.Returning{}).Updates(map[string]any{"name": "Zulu2", "user_type": clause.Expr{SQL: "user_type + 1"}})
 	assert.NoError(t, res.Error, "expecting no error updating Name and user_type with Returning")
 	assert.EqualValuesf(t, "Zulu2", model.Name, "expecting Name to be 'Zulu2' was %s", model.Name)
 	assert.EqualValuesf(t, 3, model.UserType, "expecting UserType to be updated in-place at 3 was %d", model.UserType)
@@ -652,12 +690,12 @@ func TestReturningInto(t *testing.T) {
 	assert.NoError(t, res.Error, "expecting no error updating Name with Returning")
 	assert.EqualValuesf(t, "Bob", model.Name, "expecting Name to be 'Bob' was %s", model.Name)
 
-	res = db.WithContext(currentContext()).Clauses(clause.Returning{}).Model(model).Updates(map[string]any{"name": "Charlie", "account": "charlie"})
+	res = db.WithContext(currentContext()).Model(model).Clauses(clause.Returning{}).Updates(map[string]any{"name": "Charlie", "account": "charlie"})
 	assert.NoError(t, res.Error, "expecting no error updating with map with Returning")
 	assert.EqualValuesf(t, "Charlie", model.Name, "expecting Name to be 'Charlie' was %s", model.Name)
 	assert.EqualValuesf(t, "charlie", model.Account, "expecting Account to be 'charlie' was %s", model.Account)
 
-	res = db.WithContext(currentContext()).Clauses(clause.Returning{}).Model(model).Where("\"name\" = ?", "Delta").Updates(map[string]any{"name": "Charlie", "account": "charlie"})
+	res = db.WithContext(currentContext()).Model(model).Clauses(clause.Returning{}).Where(`name = ?`, "Delta").Updates(map[string]any{"name": "Charlie", "account": "charlie"})
 	assert.NoError(t, res.Error, "expecting no error updating with map with Returning")
 	assert.EqualValuesf(t, "Charlie", model.Name, "expecting Name to be 'Charlie' was %s", model.Name)
 	assert.EqualValuesf(t, "charlie", model.Account, "expecting Account to be 'charlie' was %s", model.Account)
@@ -705,13 +743,18 @@ func TestReturning(t *testing.T) {
 	assert.Equal(t, true, model.Enabled, "expecting 'true'")
 	assert.Equal(t, ptr(true), model.PEnabled, "expecting '*true'")
 
-	res = db.WithContext(currentContext()).Model(&model).Update("name", "Alice").Update("sex", "f").Update("enabled", false)
+	m := map[string]any{
+		"name":    "Alice",
+		"sex":     "f",
+		"enabled": false,
+	}
+	res = db.WithContext(currentContext()).Model(&model).Clauses(clause.Returning{}).Updates(m)
 	assert.NoError(t, res.Error, "expecting no error")
 	assert.Equal(t, modelId, model.ID)
 	assert.Equal(t, "Alice", model.Name)
 	assert.Equal(t, "f", model.Sex, "expecting 'f'")
 
-	res = db.WithContext(currentContext()).Model(&model).Updates(map[string]any{
+	res = db.WithContext(currentContext()).Model(&model).Clauses(clause.Returning{}).Updates(map[string]any{
 		"name": "Bob",
 		"sex":  "b",
 	})
@@ -726,7 +769,7 @@ func TestReturning(t *testing.T) {
 		"sex":       "m",
 		"enabled":   true,
 		"penabled":  ptr(true),
-		"user_type": gorm.Expr("\"user_type\" + 1"),
+		"user_type": gorm.Expr(`user_type + 1`),
 	})
 	assert.NoError(t, res.Error, "expecting no error")
 	assert.Equal(t, modelId, model.ID)
@@ -791,8 +834,8 @@ func TestLimit(t *testing.T) {
 		{name: "Offset10", args: args{offset: 10, limit: 0}},
 		{name: "Limit10", args: args{offset: 0, limit: 10}},
 		{name: "Offset10Limit10", args: args{offset: 10, limit: 10}},
-		{name: "Offset10Limit10Order", args: args{offset: 10, limit: 10, order: `"id"`}},
-		{name: "Offset10Limit10OrderDESC", args: args{offset: 10, limit: 10, order: `"id" DESC`}},
+		{name: "Offset10Limit10Order", args: args{offset: 10, limit: 10, order: `id`}},
+		{name: "Offset10Limit10OrderDESC", args: args{offset: 10, limit: 10, order: `id DESC`}},
 	}
 
 	for _, tt := range tests {

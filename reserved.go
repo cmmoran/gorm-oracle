@@ -3,33 +3,44 @@ package oracle
 import (
 	"strings"
 
-	"github.com/emirpasic/gods/sets/hashset"
+	"github.com/emirpasic/gods/v2/sets/hashset"
 )
 
-var ReservedWords = hashset.New(func() []interface{} {
-	reservedWords := make([]interface{}, len(ReservedWordsList))
-	for i, word := range ReservedWordsList {
-		reservedWords[i] = word
-	}
-	return reservedWords
-}()...)
+var ReservedWords = hashset.New[string](ReservedWordsList...)
 
 func IsReservedWord(v string) bool {
-	return ReservedWords.Contains(strings.ToUpper(v))
+	parts := strings.Split(v, " ")
+
+	return ReservedWords.Contains(parts...)
 }
 
 var ReservedWordsList = []string{
-	"AGGREGATE", "AGGREGATES", "ALL", "ALLOW", "ANALYZE", "ANCESTOR", "AND", "ANY", "AS", "ASC", "AT", "AVG", "BETWEEN",
-	"BINARY_DOUBLE", "BINARY_FLOAT", "BLOB", "BRANCH", "BUILD", "BY", "BYTE", "CASE", "CAST", "CHAR", "CHILD", "CLEAR",
-	"CLOB", "COMMIT", "COMPILE", "CONSIDER", "COUNT", "CREATE", "DATATYPE", "DATE", "DATE_MEASURE", "DAY", "DECIMAL",
-	"DELETE", "DESC", "DESCENDANT", "DIMENSION", "DISALLOW", "DIVISION", "DML", "ELSE", "END", "ESCAPE", "EXECUTE",
-	"FIRST", "FLOAT", "FOR", "FROM", "HIERARCHIES", "HIERARCHY", "HOUR", "IGNORE", "IN", "INFINITE", "INSERT",
-	"INTEGER", "INTERVAL", "INTO", "IS", "LAST", "LEAF_DESCENDANT", "LEAVES", "LEVEL", "LIKE", "LIKEC", "LIKE2",
-	"LIKE4", "LOAD", "LOCAL", "LOG_SPEC", "LONG", "MAINTAIN", "MAX", "MEASURE", "MEASURES", "MEMBER", "MEMBERS",
-	"MERGE", "MLSLABEL", "MIN", "MINUTE", "MODEL", "MONTH", "NAN", "NCHAR", "NCLOB", "NO", "NONE", "NOT", "NULL",
-	"NULLS", "NUMBER", "NVARCHAR2", "OF", "OLAP", "OLAP_DML_EXPRESSION", "ON", "ONLY", "OPERATOR", "OR", "ORDER",
-	"OVER", "OVERFLOW", "PARALLEL", "PARENT", "PLSQL", "PRUNE", "RAW", "RELATIVE", "ROOT_ANCESTOR", "ROWID", "SCN",
-	"SECOND", "SELF", "SERIAL", "SET", "SOLVE", "SOME", "SORT", "SPEC", "SUM", "SYNCH", "TEXT_MEASURE", "THEN", "TIME",
-	"TIMESTAMP", "TO", "UNBRANCH", "UPDATE", "USING", "VALIDATE", "VALUES", "VARCHAR2", "WHEN", "WHERE", "WITHIN",
-	"WITH", "YEAR", "ZERO", "ZONE",
+	"ACCESS", "ELSE", "MODIFY", "START",
+	"ADD", "EXCLUSIVE", "NOAUDIT", "SELECT",
+	"ALL", "EXISTS", "NOCOMPRESS", "SESSION",
+	"ALTER", "FILE", "NOT", "SET",
+	"AND", "FLOAT", "NOTFOUND", "SHARE",
+	"ANY", "FOR", "NOWAIT", "SIZE",
+	"ARRAYLEN", "FROM", "NULL", "SMALLINT",
+	"AS", "GRANT", "NUMBER", "SQLBUF",
+	"ASC", "GROUP", "OF", "SUCCESSFUL",
+	"AUDIT", "HAVING", "OFFLINE", "SYNONYM",
+	"BETWEEN", "IDENTIFIED", "ON", "SYSDATE",
+	"BY", "IMMEDIATE", "ONLINE", "TABLE",
+	"CHAR", "IN", "OPTION", "THEN",
+	"CHECK", "INCREMENT", "OR", "TO",
+	"CLUSTER", "INDEX", "ORDER", "TRIGGER",
+	"COLUMN", "INITIAL", "PCTFREE", "UID",
+	"COMMENT", "INSERT", "PRIOR", "UNION",
+	"COMPRESS", "INTEGER", "PRIVILEGES", "UNIQUE",
+	"CONNECT", "INTERSECT", "PUBLIC", "UPDATE",
+	"CREATE", "INTO", "RAW", "USER",
+	"CURRENT", "IS", "RENAME", "VALIDATE",
+	"DATE", "LEVEL", "RESOURCE", "VALUES",
+	"DECIMAL", "LIKE", "REVOKE", "VARCHAR",
+	"DEFAULT", "LOCK", "ROW", "VARCHAR2",
+	"DELETE", "LONG", "ROWID", "VIEW",
+	"DESC", "MAXEXTENTS", "ROWLABEL", "WHENEVER",
+	"DISTINCT", "MINUS", "ROWNUM", "WHERE",
+	"DROP", "MODE", "ROWS", "WITH",
 }

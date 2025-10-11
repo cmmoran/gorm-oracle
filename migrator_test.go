@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
 
@@ -29,7 +30,7 @@ func TestMigrator_AutoMigrate(t *testing.T) {
 		args    args
 		wantErr bool
 	}{
-		{name: "TestTableUser", args: args{models: []interface{}{TestTableUser{}}, comments: []string{"User Information Table"}}},
+		{name: "TestTableUser", args: args{drop: true, models: []interface{}{TestTableUser{}}, comments: []string{"User Information Table"}}},
 		{name: "TestTableUserDrop", args: args{drop: true, models: []interface{}{TestTableUser{}}, comments: []string{"User Information Table"}}},
 		{name: "TestTableUserNoComments", args: args{drop: true, models: []interface{}{TestTableUserNoComments{}}, comments: []string{"User Information Table"}}},
 		{name: "TestTableUserAddColumn", args: args{models: []interface{}{TestTableUserAddColumn{}}, comments: []string{"User Information Table"}}},
@@ -98,10 +99,17 @@ func TestMigrator_AutoMigrate(t *testing.T) {
 	}
 }
 
+type TestTablePartialIndex struct {
+	gorm.Model
+	Name string `gorm:"column:name;size:50;comment:User Name"`
+	Age  uint8  `gorm:"column:age;size:8;comment:User Age"`
+	Sex  string `gorm:"column:sex;type:char(1);check:chk_there_can_be_only_two,lower(sex)='m' or lower(sex)='f';index:uni_there_can_be_only_two,unique,where:lower(sex) in ('m'\\,'f');"`
+}
+
 // TestTableUser Test User Information Table Model
 type TestTableUser struct {
 	ID   uint64 `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
-	UID  string `gorm:"column:uid;type:varchar(50);comment:User Identity" json:"uid"`
+	UID  string `gorm:"type:varchar(50);comment:User Identity" json:"uid"`
 	Name string `gorm:"column:name;size:50;comment:User Name" json:"name"`
 
 	Account  string `gorm:"column:account;type:varchar(50);comment:Login Account" json:"account"`
@@ -259,8 +267,10 @@ func TestMigrator_FieldNameIsReservedWord(t *testing.T) {
 	}
 
 	testModel := new(testFieldNameIsReservedWord)
-	_ = dbNamingCase.Migrator().DropTable(testModel)
-	_ = dbIgnoreCase.Migrator().DropTable(testModel)
+	err := dbNamingCase.Migrator().DropTable(testModel)
+	require.NoError(t, err, "expecting no error")
+	err = dbIgnoreCase.Migrator().DropTable(testModel)
+	require.NoError(t, err, "expecting no error")
 
 	type args struct {
 		db    *gorm.DB
@@ -301,7 +311,7 @@ func TestMigrator_DatatypesJsonMapNamingCase(t *testing.T) {
 	type testJsonMapNamingCase struct {
 		gorm.Model
 
-		Extras JSONMap `gorm:"check:\"extras\" IS JSON"`
+		Extras JSONMap `gorm:"check:\"EXTRAS\" IS JSON"`
 	}
 	testModel := new(testJsonMapNamingCase)
 	_ = dbNamingCase.Migrator().DropTable(testModel)

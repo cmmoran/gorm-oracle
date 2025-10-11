@@ -1,0 +1,69 @@
+name: go
+on: [push,pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@v4
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+
+      - name: Compute Go cache paths
+        id: goenv
+        shell: bash
+        run: |
+          echo "gomodcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          echo "gocache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.goenv.outputs.gomodcache }}
+          key: go-mod-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-mod-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
+            go-mod-${{ runner.os }}-${{ runner.arch }}-
+
+
+      - name: Get dependencies, run test
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: false
+          CGO_ENABLED: 0
+        run: |
+          go test ./...
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@v4
+        with:
+          token: '${{ secrets.GITHUB_TOKEN }}'
+
+      -
+        name: Conventional Changelog Action
+        id: changelog
+        uses: TriPSs/conventional-changelog-action@v6.0.0
+        with:
+          github-token: '${{ secrets.GITHUB_TOKEN }}'
+          git-branch: main
+          version-file: version.yml
+          git-user-name: Chris Moran
+          git-user-email: chris@chrismoran.com
+          output-file: CHANGELOG.md
+
+      -
+        name: Release
+        uses: ncipollo/release-action@v1.14.0
+        with:
+          tag: ${{ steps.changelog.outputs.tag }}
+          name: ${{ steps.changelog.outputs.tag }}
+          body: ${{ steps.changelog.outputs.clean_changelog }}

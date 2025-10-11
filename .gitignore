@@ -3,6 +3,7 @@
 !*.go
 !go.sum
 !go.mod
+!CHANGELOG.md
 !README.md
 !LICENSE
 !*/

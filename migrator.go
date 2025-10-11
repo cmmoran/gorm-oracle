@@ -2,8 +2,8 @@ package oracle
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"gorm.io/gorm"
@@ -15,6 +15,94 @@ import (
 // Migrator implement gorm migrator interface
 type Migrator struct {
 	migrator.Migrator
+	namingStrategy *NamingStrategy
+}
+
+func (m Migrator) autoMigrate(values ...interface{}) error {
+	_ = tryQuotifyReservedWords(m.DB, values...)
+	for _, value := range m.ReorderModels(values, true) {
+		queryTx, execTx := m.GetQueryAndExecTx()
+		if !queryTx.Migrator().HasTable(value) {
+			if err := execTx.Migrator().CreateTable(value); err != nil {
+				return err
+			}
+		} else {
+			if err := m.RunWithValue(value, func(stmt *gorm.Statement) error {
+
+				if stmt.Schema == nil {
+					return errors.New("failed to get schema")
+				}
+
+				columnTypes, err := queryTx.Migrator().ColumnTypes(value)
+				if err != nil {
+					return err
+				}
+				var (
+					parseIndexes          = stmt.Schema.ParseIndexes()
+					parseCheckConstraints = stmt.Schema.ParseCheckConstraints()
+				)
+				for _, dbName := range stmt.Schema.DBNames {
+					var foundColumn gorm.ColumnType
+
+					for _, columnType := range columnTypes {
+						if columnType.Name() == dbName {
+							foundColumn = columnType
+							break
+						}
+					}
+
+					if foundColumn == nil {
+						// not found, add column
+						if err = execTx.Migrator().AddColumn(value, dbName); err != nil {
+							return err
+						}
+					} else {
+						// found, smartly migrate
+						field := stmt.Schema.FieldsByDBName[dbName]
+						if err = execTx.Migrator().MigrateColumn(value, field, foundColumn); err != nil {
+							return err
+						}
+					}
+				}
+
+				if !m.DB.DisableForeignKeyConstraintWhenMigrating && !m.DB.IgnoreRelationshipsWhenMigrating {
+					for _, rel := range stmt.Schema.Relationships.Relations {
+						if rel.Field.IgnoreMigration {
+							continue
+						}
+						if constraint := rel.ParseConstraint(); constraint != nil &&
+							constraint.Schema == stmt.Schema && !queryTx.Migrator().HasConstraint(value, constraint.Name) {
+							if err := execTx.Migrator().CreateConstraint(value, constraint.Name); err != nil {
+								return err
+							}
+						}
+					}
+				}
+
+				for _, chk := range parseCheckConstraints {
+					if !queryTx.Migrator().HasConstraint(value, chk.Name) {
+						if err = execTx.Migrator().CreateConstraint(value, chk.Name); err != nil {
+							return err
+						}
+					}
+				}
+
+				for _, idx := range parseIndexes {
+					if !queryTx.Migrator().HasIndex(value, idx.Name) {
+						if err = execTx.Migrator().CreateIndex(value, idx.Name); err != nil {
+							return err
+						}
+					}
+				}
+
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // AutoMigrate automatically migrate model to table structure
@@ -25,7 +113,7 @@ type Migrator struct {
 //	// Migrate and set multiple table comments
 //	db.Set("gorm:table_comments", []string{"User Information Table", "Company Information Table"}).AutoMigrate(&User{}, &Company{})
 func (m Migrator) AutoMigrate(dst ...interface{}) error {
-	if err := m.Migrator.AutoMigrate(dst...); err != nil {
+	if err := m.autoMigrate(dst...); err != nil {
 		return err
 	}
 	// set table comment
@@ -111,7 +199,7 @@ func (m Migrator) CreateTable(values ...interface{}) (err error) {
 	ignoreCase := !m.Dialector.(Dialector).NamingCaseSensitive
 	for _, value := range values {
 		if ignoreCase {
-			_ = m.TryQuotifyReservedWords(value)
+			_ = tryQuotifyReservedWords(m.DB, value)
 		}
 		_ = m.TryRemoveOnUpdate(value)
 	}
@@ -187,9 +275,9 @@ func (m Migrator) getSchemaTable(stmt *gorm.Statement) (ownerName, tableName str
 		return
 	}
 	if stmt.Schema == nil {
-		tableName = stmt.Table
+		tableName = m.namingStrategy.normalizeQualifiedIdent(stmt.Table)
 	} else {
-		tableName = stmt.Schema.Table
+		tableName = m.namingStrategy.normalizeQualifiedIdent(stmt.Schema.Table)
 		if strings.Contains(tableName, ".") {
 			ownerTable := strings.Split(tableName, ".")
 			ownerName, tableName = ownerTable[0], ownerTable[1]
@@ -218,14 +306,12 @@ func (m Migrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, error) {
 			return err
 		}
 
-		ignoreCase := !m.Dialector.(Dialector).NamingCaseSensitive
 		for _, c := range rawColumnTypes {
 			columnType := migrator.ColumnType{SQLColumnType: c}
-			if ignoreCase && IsReservedWord(c.Name()) {
-				columnType.NameValue = sql.NullString{
-					String: strconv.Quote(c.Name()),
-					Valid:  true,
-				}
+			name := m.namingStrategy.normalizeQualifiedIdent(c.Name())
+			columnType.NameValue = sql.NullString{
+				String: name,
+				Valid:  true,
 			}
 			columnTypes = append(columnTypes, columnType)
 		}
@@ -481,7 +567,7 @@ func (m Migrator) CreateIndex(value interface{}, name string) error {
 			exprs := make([]string, len(idx.Fields))
 			for i, f := range idx.Fields {
 				// f.DBName is just the plain column name (string)
-				colName := stmt.Quote(f.DBName)
+				colName := m.namingStrategy.normalizeQualifiedIdent(f.DBName)
 				exprs[i] = fmt.Sprintf(
 					"CASE WHEN %s THEN %s END",
 					idx.Where,
@@ -506,7 +592,9 @@ func (m Migrator) CreateIndex(value interface{}, name string) error {
 				opt = fmt.Sprintf(" %s", idx.Option)
 			}
 
-			str := fmt.Sprintf(`%sINDEX %s ON %s (%s) %s%s%s`, create, stmt.Quote(idx.Name), stmt.Quote(stmt.Table), strings.Join(exprs, ","), using, comment, opt)
+			idxName := m.namingStrategy.normalizeQualifiedIdent(idx.Name)
+			stmtTable := m.namingStrategy.normalizeQualifiedIdent(stmt.Table)
+			str := fmt.Sprintf(`%sINDEX %s ON %s (%s) %s%s%s`, create, idxName, stmtTable, strings.Join(exprs, ","), using, comment, opt)
 
 			return m.DB.Exec(str).Error
 
@@ -563,28 +651,16 @@ func (m Migrator) TryRemoveOnUpdate(values ...interface{}) error {
 	return nil
 }
 
-func (m Migrator) TryQuotifyReservedWords(values ...interface{}) error {
+func tryQuotifyReservedWords(db *gorm.DB, values ...interface{}) error {
 	for _, value := range values {
-		if err := m.RunWithValue(value, func(stmt *gorm.Statement) error {
-			ignoreCase := !m.Dialector.(Dialector).NamingCaseSensitive
+		if err := runWithValue(db, value, func(stmt *gorm.Statement) error {
 			for idx, v := range stmt.Schema.DBNames {
-				if ignoreCase {
-					v = strings.ToUpper(v)
-				}
-				if IsReservedWord(v) {
-					v = strconv.Quote(v)
-				}
+				v = db.NamingStrategy.ColumnName("", v)
 				stmt.Schema.DBNames[idx] = v
 			}
-
 			for _, v := range stmt.Schema.Fields {
 				fieldDBName := v.DBName
-				if ignoreCase {
-					v.DBName = strings.ToUpper(v.DBName)
-				}
-				if IsReservedWord(v.DBName) {
-					v.DBName = strconv.Quote(v.DBName)
-				}
+				v.DBName = db.NamingStrategy.ColumnName("", v.DBName)
 				delete(stmt.Schema.FieldsByDBName, fieldDBName)
 				stmt.Schema.FieldsByDBName[v.DBName] = v
 			}
