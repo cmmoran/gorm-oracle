@@ -3,7 +3,6 @@ package oracle
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
 	"errors"
 	"fmt"
 	"reflect"
@@ -12,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	oracle "github.com/godoes/gorm-oracle"
 	"github.com/sijms/go-ora/v2"
 	"golang.org/x/exp/slices"
 	"gorm.io/gorm"
@@ -33,7 +33,7 @@ type Config struct {
 	// NamingCaseSensitive applies to identifiers
 	NamingCaseSensitive bool // whether naming is case-sensitive
 	// PreferredCase determines the strategy for naming identifiers; Note that setting PreferredCase to CamelCase or SnakeCase will override the NamingCaseSensitive setting; ScreamingSnakeCase is the default and works with both case-sensitive and case-insensitive naming
-	PreferedCase Case
+	PreferredCase Case
 
 	// whether VARCHAR type size is character length, defaulting to byte length
 	VarcharSizeIsCharLength bool
@@ -152,58 +152,28 @@ func DelSessionParams(db *sql.DB, keys []string) {
 	}
 }
 
-func convertCustomType(val interface{}) interface{} {
-	rv := reflect.ValueOf(val)
-	if !rv.IsValid() || rv.IsZero() {
-		return val
-	}
-	ri := rv.Interface()
-	typeName := reflect.TypeOf(ri).Name()
-	if reflect.TypeOf(val).Kind() == reflect.Ptr {
-		if rv.IsNil() {
-			typeName = rv.Type().Elem().Name()
-		} else {
-			for rv.Kind() == reflect.Ptr {
-				rv = rv.Elem()
-			}
-			ri = rv.Interface()
-			typeName = reflect.TypeOf(ri).Name()
-		}
-	}
-	if typeName == "DeletedAt" {
-		// gorm.DeletedAt
-		if rv.IsZero() {
-			val = sql.NullTime{}
-		} else {
-			val = getTimeValue(ri.(gorm.DeletedAt).Time)
-		}
-	} else if m := rv.MethodByName("Time"); m.IsValid() && m.Type().NumIn() == 0 && !ty16Byte.AssignableTo(rv.Type()) {
-		// custom time type
-		for _, result := range m.Call([]reflect.Value{}) {
-			if reflect.TypeOf(result.Interface()).Name() == "Time" {
-				val = getTimeValue(result.Interface().(time.Time))
-			}
-		}
-	}
-	return val
-}
-
-func reflectDereference(obj any) any {
+func reflectDereference(obj any) (any, bool) {
 	if obj == nil {
-		return nil
+		return nil, false
 	}
 
 	v := reflect.ValueOf(obj)
 
+	if !v.IsValid() {
+		return nil, false
+	}
+
+	isPtr := false
 	// Unwrap interfaces and pointers
 	for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
 		if v.IsNil() {
-			return nil
+			return nil, true
 		}
 		v = v.Elem()
+		isPtr = true
 	}
 
-	return v.Interface()
+	return v.Interface(), isPtr
 }
 
 func reflectReference(obj any, wrapPointers ...bool) any {
@@ -233,13 +203,6 @@ func reflectReference(obj any, wrapPointers ...bool) any {
 	return ptrVal.Interface()
 }
 
-func getTimeValue(t time.Time) interface{} {
-	if t.IsZero() {
-		return sql.NullTime{}
-	}
-	return t
-}
-
 func (d Dialector) DummyTableName() string {
 	return "DUAL"
 }
@@ -249,12 +212,12 @@ func (d Dialector) Name() string {
 }
 
 func (d Dialector) Initialize(db *gorm.DB) (err error) {
-	if d.PreferedCase == SnakeCase || d.PreferedCase == CamelCase {
+	if d.PreferredCase == SnakeCase || d.PreferredCase == CamelCase {
 		d.NamingCaseSensitive = true
 	}
 	d.namingStrategy = &NamingStrategy{
 		NamingCaseSensitive: d.NamingCaseSensitive,
-		PreferredCase:       d.PreferedCase,
+		PreferredCase:       d.PreferredCase,
 	}
 	db.NamingStrategy = d.namingStrategy
 
@@ -292,7 +255,14 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 	}
 	d.sessionLocation = loc
 	if sqlDB, ok := db.ConnPool.(*sql.DB); ok {
-		_ = go_ora.AddSessionParam(sqlDB, "TIME_ZONE", loc.String())
+		_, _ = oracle.AddSessionParams(sqlDB, map[string]string{
+			"TIME_ZONE":               loc.String(),
+			"NLS_DATE_FORMAT":         `YYYY-MM-DD"T"HH24:MI:SS`,
+			"NLS_TIMESTAMP_FORMAT":    `YYYY-MM-DD"T"HH24:MI:SS.FF6`,
+			"NLS_TIMESTAMP_TZ_FORMAT": `YYYY-MM-DD"T"HH24:MI:SS.FF6TZH:TZM`,
+			"NLS_TIME_FORMAT":         `HH24:MI:SS.FF6`,
+			"NLS_TIME_TZ_FORMAT":      `HH24:MI:SS.FF6TZH:TZM`,
+		})
 	}
 
 	err = db.ConnPool.QueryRowContext(context.Background(), "select version from product_component_version where rownum = 1").Scan(&d.DBVer)
@@ -300,16 +270,25 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 		return err
 	}
 
+	d.namingStrategy.capIdentifierMaxLength = 30
+	// https://docs.oracle.com/en/database/oracle/oracle-database/26/sqlrf/Database-Object-Names-and-Qualifiers.html
+	dbverSplits := strings.Split(d.DBVer, ".")
+	if dbVer, _ := strconv.Atoi(dbverSplits[0]); dbVer == 12 {
+		if dbMinor, _ := strconv.Atoi(dbverSplits[1]); dbMinor >= 2 {
+			if d.namingStrategy.IdentifierMaxLength == 0 {
+				d.namingStrategy.capIdentifierMaxLength = 128
+			}
+		}
+	} else if dbVer > 12 {
+		d.namingStrategy.capIdentifierMaxLength = 128
+	}
 	if err = db.Callback().Create().Replace("gorm:create", Create); err != nil {
 		return
 	}
-	if err = db.Callback().Update().Replace("gorm:update", Update(config)); err != nil {
+	if err = db.Callback().Update().Replace("gorm:update", Update); err != nil {
 		return
 	}
-	if err = db.Callback().Delete().Replace("gorm:delete", Delete(config)); err != nil {
-		return
-	}
-	if err = db.Callback().Query().Replace("gorm:query", Query); err != nil {
+	if err = db.Callback().Delete().Replace("gorm:delete", Delete); err != nil {
 		return
 	}
 
@@ -325,17 +304,15 @@ func (d Dialector) stableDbNameFields(m *schema.Schema, cols []clause.Column) []
 	}
 	ordered := make([]*schema.Field, 0, len(m.Fields))
 	for _, f := range m.Fields {
+		if !isReturnableField(f) || !f.Readable {
+			continue
+		}
 		if fld := m.LookUpField(f.Name); fld != nil {
-			if len(cols) == 0 || slices.ContainsFunc(cols, func(c clause.Column) bool {
+			if len(cols) == 0 || !slices.ContainsFunc(cols, func(c clause.Column) bool {
 				return c.Name == fld.DBName
 			}) {
 				ordered = append(ordered, fld)
 			}
-		}
-		if fld, ok := m.FieldsByDBName[f.DBName]; ok && (len(cols) == 0 || slices.ContainsFunc(cols, func(c clause.Column) bool {
-			return c.Name == fld.DBName
-		})) {
-			ordered = append(ordered, fld)
 		}
 	}
 	return ordered
@@ -351,72 +328,19 @@ func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuil
 	}
 
 	clauseBuilders["RETURNING"] = func(c clause.Clause, builder clause.Builder) {
-		if _, ok := c.Expression.(clause.Returning); ok {
-			_, _ = builder.WriteString("/*- -*/")
-			_, _ = builder.WriteString("RETURNING ")
-
-			stmt, _ := builder.(*gorm.Statement)
-
-			returningClause := stmt.Clauses["RETURNING"]
-			rCols := returningClause.Expression.(clause.Returning).Columns
-			returningFields := d.stableDbNameFields(stmt.Schema, rCols)
-			wasEmpty := len(returningFields) == 0
-			appendReturningColumns := func(colName string) {
-				if wasEmpty {
-					rCols = append(rCols, clause.Column{Name: colName})
-				}
-			}
-			if len(returningFields) > 0 {
-				for idx, f := range returningFields {
-					if idx > 0 {
-						_ = builder.WriteByte(',')
-					}
-					builder.WriteQuoted(f.DBName)
-					appendReturningColumns(f.DBName)
-				}
-				_, _ = stmt.WriteString(" INTO ")
-
-				// Determine the struct root for binding
-				rv := stmt.ReflectValue
-				instantiateNilPointers(rv)
-				for rv.Kind() == reflect.Ptr {
-					rv = rv.Elem()
-				}
-
-				// Append an OUT bind for each column
-				for i, sf := range returningFields {
-					var (
-						destPtr driver.Value
-						size    int
-					)
-					field := rv.FieldByName(sf.Name)
-
-					var refVal reflect.Value
-					refVal = sf.ReflectValueOf(stmt.Context, rv)
-					if refVal.IsValid() && refVal.CanAddr() {
-						destPtr = refVal.Addr().Interface()
-					} else {
-						destPtr = field.Interface()
-					}
-
-					if sf.Size == 0 {
-						size = 1
-					} else {
-						size = sf.Size
-					}
-					if i > 0 {
-						_, _ = stmt.WriteString(", ")
-					}
-					stmt.AddVar(stmt, go_ora.Out{
-						Dest: destPtr,
-						Size: size,
-					})
-					_, _ = stmt.WriteString(fmt.Sprintf("/*- %s -*/", sf.Name))
-				}
-			}
-			stmt.Clauses["RETURNING"] = returningClause
+		if _, ok := c.Expression.(Returning); ok {
+			c.Build(builder)
 		}
-
+		if cret, ok := c.Expression.(clause.Returning); ok {
+			stmt, _ := builder.(*gorm.Statement)
+			if len(cret.Columns) > 0 {
+				c.Expression = ReturningWithColumns(cret.Columns)
+			} else {
+				c.Expression = Returning{}
+			}
+			stmt.Clauses["RETURNING"] = c
+			c.Build(builder)
+		}
 	}
 	return
 }
@@ -587,72 +511,15 @@ func (d Dialector) BindVarTo(writer clause.Writer, stmt *gorm.Statement, _ inter
 // in double quotes and any internal `"` are escaped as `""`.
 // Existing outer quotes around parts are normalized (removed then re-applied).
 func (d Dialector) QuoteTo(w clause.Writer, s string) {
-	if s == "" {
-		_, _ = w.WriteString(s)
-		return
-	}
-
-	_, _ = w.WriteString(d.namingStrategy.normalizeQualifiedIdent(s))
-
-	//parts := splitIdentParts(s) // split on '.' outside of quotes
-	//
-	//for i, p := range parts {
-	//	// Strip surrounding quotes if present (normalize)
-	//	if len(p) >= 2 && p[0] == '"' && p[len(p)-1] == '"' {
-	//		p = p[1 : len(p)-1]
-	//	}
-	//	// Escape internal quotes
-	//	p = strings.ReplaceAll(p, `"`, `""`)
-	//
-	//	_, _ = w.WriteString(`"`)
-	//	p = d.namingStrategy.normalizeQualifiedIdent(p)
-	//	_, _ = w.WriteString(p)
-	//	_, _ = w.WriteString(`"`)
-	//
-	//	if i < len(parts)-1 {
-	//		_ = w.WriteByte('.')
-	//	}
-	//}
+	_, _ = w.WriteString(d.namingStrategy.normalizeQualified(s))
 }
-
-// splitIdentParts splits s by '.' that are not inside double quotes.
-// It preserves empty parts (e.g., leading/trailing dots) to match input shape.
-//func splitIdentParts(s string) []string {
-//	var parts []string
-//	start := 0
-//	inQuote := false
-//	quoteRun := 0 // counts consecutive `"` to handle doubled quotes
-//
-//	for i := 0; i < len(s); i++ {
-//		c := s[i]
-//		if c == '"' {
-//			quoteRun++
-//			if quoteRun == 2 {
-//				// doubled quote "" inside a quoted segment -> stays inside
-//				quoteRun = 0
-//			}
-//			// toggle inQuote only on a single `"` boundary
-//			if quoteRun == 1 {
-//				inQuote = !inQuote
-//			}
-//			continue
-//		}
-//		quoteRun = 0
-//
-//		if c == '.' && !inQuote {
-//			parts = append(parts, s[start:i])
-//			start = i + 1
-//		}
-//	}
-//	parts = append(parts, s[start:])
-//	return parts
-//}
 
 var numericPlaceholder = regexp.MustCompile(`:(\d+)`)
 
 func (d Dialector) Explain(sql string, vars ...interface{}) string {
 	for idx, val := range vars {
-		switch v := reflectDereference(val).(type) {
+		vv, _ := reflectDereference(val)
+		switch v := vv.(type) {
 		case bool:
 			if v {
 				vars[idx] = 1
@@ -670,8 +537,10 @@ var ty16Byte = reflect.TypeOf((*[16]byte)(nil)).Elem()
 
 // Check for types that match ~[16]byte
 func isSixteenByteType(t reflect.Type) bool {
-	// Now check for: array of length 16 whose element is byte
-	return t.Kind() != reflect.Pointer && ty16Byte.AssignableTo(t) || t.Kind() == reflect.Pointer && ty16Byte.AssignableTo(t.Elem())
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t.ConvertibleTo(ty16Byte)
 }
 
 func (d Dialector) DataTypeOf(field *schema.Field) string {
@@ -740,6 +609,12 @@ func (d Dialector) DataTypeOf(field *schema.Field) string {
 		sqlType = "TIMESTAMP WITH TIME ZONE"
 	case schema.Bytes:
 		sqlType = "BLOB"
+	case "timestamp without time zone":
+		sqlType = "TIMESTAMP WITH LOCAL TIME ZONE"
+	case "timestamp":
+		sqlType = "TIMESTAMP"
+	case "date":
+		sqlType = "DATE"
 	default:
 		sqlType = string(field.DataType)
 
@@ -749,9 +624,6 @@ func (d Dialector) DataTypeOf(field *schema.Field) string {
 			} else {
 				sqlType = "VARCHAR2(4000)"
 			}
-		}
-		if strings.EqualFold(sqlType, "timestamp without time zone") {
-			sqlType = "TIMESTAMP WITH LOCAL TIME ZONE"
 		}
 
 		if sqlType == "" {
@@ -814,87 +686,4 @@ func toBytesFrom16Array(val interface{}) ([]byte, error) {
 		out[i] = byte(rv.Index(i).Uint())
 	}
 	return out, nil
-}
-
-var skipTypes = map[reflect.Type]struct{}{
-	reflect.TypeOf((*time.Time)(nil)): {},
-}
-
-func instantiateNilPointers(root interface{}) {
-	v := reflect.ValueOf(root)
-	if v.Kind() != reflect.Ptr || v.IsNil() {
-		// must be a non-nil pointer to a struct
-		return
-	}
-	visited := make(map[uintptr]struct{})
-	_instantiateNilPointers(v, visited)
-}
-
-func _instantiateNilPointers(v reflect.Value, visited map[uintptr]struct{}) {
-	// 1) Drill through pointers, but short-circuit on nil or already-seen
-	if v.Kind() == reflect.Ptr {
-		if v.IsNil() {
-			return
-		}
-		addr := v.Pointer()
-		if _, seen := visited[addr]; seen {
-			// we’ve already initialized this struct – avoid a cycle
-			return
-		}
-		visited[addr] = struct{}{}
-		v = v.Elem()
-	}
-
-	// 2) Only structs from here on
-	if v.Kind() != reflect.Struct {
-		return
-	}
-
-	t := v.Type()
-	for i := 0; i < v.NumField(); i++ {
-		field := v.Field(i)
-		sf := t.Field(i)
-
-		// skip unexported
-		if sf.PkgPath != "" {
-			continue
-		}
-
-		switch field.Kind() {
-		case reflect.Ptr:
-			// skip certain pointer types (e.g. time.Time, gorm.DeletedAt, etc.)
-			if _, skip := skipTypes[field.Type()]; skip {
-				continue
-			}
-			if field.IsNil() && field.CanSet() {
-				// allocate the struct it points to
-				field.Set(reflect.New(field.Type().Elem()))
-			}
-			// recurse into it
-			_instantiateNilPointers(field, visited)
-
-		case reflect.Struct:
-			// recurse into embedded structs
-			_instantiateNilPointers(field, visited)
-		}
-	}
-}
-
-func runWithValue(db *gorm.DB, value interface{}, fc func(*gorm.Statement) error) error {
-	if db == nil {
-		return errors.New("db is nil")
-	}
-	stmt := &gorm.Statement{DB: db}
-	if db.Statement != nil {
-		stmt.Table = db.Statement.Table
-		stmt.TableExpr = db.Statement.TableExpr
-	}
-
-	if table, ok := value.(string); ok {
-		stmt.Table = table
-	} else if err := stmt.ParseWithSpecialTableName(value, stmt.Table); err != nil {
-		return err
-	}
-
-	return fc(stmt)
 }

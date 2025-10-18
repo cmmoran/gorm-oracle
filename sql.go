@@ -90,9 +90,9 @@ func ExplainSQL(sql string, numericPlaceholder *regexp.Regexp, escaper string, a
 					str = tstr.Format(tmFmtWithMicroTz)
 				}
 				if v.Size > 0 {
-					vars[idx] = escaper + fmt.Sprintf(" /*-go_ora.Out{Dest:%s,Size:%d}-*/", str, v.Size) + escaper
+					vars[idx] = escaper + fmt.Sprintf(" /*-go_ora.Out{Dest:%v,Size:%d}-*/", str, v.Size) + escaper
 				} else {
-					vars[idx] = escaper + fmt.Sprintf(" /*-go_ora.Out{Dest:%s}-*/", str) + escaper
+					vars[idx] = escaper + fmt.Sprintf(" /*-go_ora.Out{Dest:%v}-*/", str) + escaper
 				}
 			}
 		case driver.Valuer:

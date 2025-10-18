@@ -1,12 +1,10 @@
 package oracle
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
 	"fmt"
-	"regexp"
+	"hash/fnv"
+	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/jinzhu/inflection"
 	"gorm.io/gorm/schema"
@@ -36,261 +34,517 @@ type NamingStrategy struct {
 	NameReplacer        Replacer
 	IdentifierMaxLength int
 
-	PreferredCase       Case // default is SCREAMING_SNAKE_CASE
-	NamingCaseSensitive bool // whether naming is case-sensitive
+	PreferredCase          Case // default is SCREAMING_SNAKE_CASE
+	NamingCaseSensitive    bool // whether naming is case-sensitive
+	capIdentifierMaxLength int
 }
 
 // TableName convert string to table name
-func (ns NamingStrategy) TableName(str string) (name string) {
-	prefix := ""
-	if len(ns.TablePrefix) > 0 {
-		prefix = ns.TablePrefix + "_"
-	}
-	name = prefix + ns.applyNameReplacer(str)
-	if !ns.SingularTable {
-		name = prefix + inflection.Plural(ns.applyNameReplacer(str))
+func (ns *NamingStrategy) TableName(str string) string {
+	// Resolve maxLength without mutating receiver
+	maxLength := ns.IdentifierMaxLength
+	if maxLength <= 0 {
+		maxLength = ns.capIdentifierMaxLength
 	}
 
-	return ns.normalizeQualifiedIdent(name)
+	qualifiers := make([]qualifier, 0, 3)
+
+	// 1) Handle TablePrefix:
+	//    - If it contains a dot (schema-qualified), push its parts as qualifiers.
+	//    - Else, treat as a literal prefix to the base table name (not a qualifier).
+	var (
+		schemaQuals []string
+		basePrefix  string
+	)
+	if p := strings.TrimSpace(ns.TablePrefix); p != "" {
+		if strings.Contains(p, ".") {
+			// schema-qualified prefix (e.g., ACME. or "Acme"."Core".)
+			schemaQuals = splitQualified(strings.TrimSuffix(p, "."))
+		} else {
+			// simple string prefix (e.g., "t_" or "tbl_")
+			basePrefix = p
+		}
+	}
+
+	// push schemaQuals (if any)
+	for _, q := range schemaQuals {
+		n, quoted := ns.normalizePart(q)
+		qualifiers = append(qualifiers, qualifier{name: n, quoted: quoted})
+	}
+
+	// 2) Compute base logical name:
+	//    If explicitly quoted -> DO NOT pluralize; keep exact inner.
+	//    Else pluralize when SingularTable == false.
+	if inner, ok := IsExplicitQuoted(str); ok {
+		// exact name, no pluralization
+		str = `"` + inner + `"`
+	} else if !ns.SingularTable {
+		str = inflection.Plural(str)
+	}
+
+	// 3) Apply simple (non-schema) prefix to base logical name before normalization.
+	//    Preserve explicit quotes if present.
+	if basePrefix != "" {
+		if inner, ok := IsExplicitQuoted(str); ok {
+			str = `"` + basePrefix + inner + `"`
+		} else {
+			str = basePrefix + str
+		}
+	}
+
+	// 4) Normalize the final base name and append as the last qualifier.
+	baseName, quoted := ns.normalizePart(str)
+	qualifiers = append(qualifiers, qualifier{name: baseName, quoted: quoted})
+
+	// 5) Join with quoting/capping.
+	//    Use maxLength we computed (do not mutate ns in a value receiver).
+	//    joinQualified already calls shortenIfNeeded; adapt it to accept maxLength if needed.
+	return ns.joinQualified(qualifiers)
 }
 
-// SchemaName generate schema name from table name, don't guarantee it is the reverse value of TableName
-func (ns NamingStrategy) SchemaName(table string) (name string) {
-	name = strings.TrimPrefix(table, ns.TablePrefix)
-
-	if !ns.SingularTable {
-		name = inflection.Singular(table)
+// SchemaName returns the normalized OWNER/SCHEMA portion for a possibly-qualified table.
+// If no explicit owner is provided, returns "".
+func (ns *NamingStrategy) SchemaName(table string) string {
+	parts := splitQualified(table)
+	if len(parts) == 0 {
+		return ""
 	}
-
-	return ns.normalizeQualifiedIdent(name)
+	if len(parts) == 1 {
+		// unqualified; no explicit schema/owner
+		return ""
+	}
+	owner, quoted := ns.normalizePart(parts[0])
+	return ns.joinQualified([]qualifier{{name: owner, quoted: quoted}})
 }
 
 // ColumnName convert string to column name
-func (ns NamingStrategy) ColumnName(_, column string) (name string) {
-	return ns.normalizeQualifiedIdent(ns.applyNameReplacer(column))
-}
-
-// JoinTableName convert string to join table name
-func (ns NamingStrategy) JoinTableName(str string) (name string) {
-	prefix := ""
-	if len(ns.TablePrefix) > 0 {
-		prefix = ns.TablePrefix + "_"
+func (ns *NamingStrategy) ColumnName(_ /*table*/, column string) string {
+	// Explicitly quoted tag: column:"\"weirdName\"" → DBName = weirdName
+	if inner, ok := IsExplicitQuoted(column); ok {
+		return inner
 	}
 
-	name = prefix + ns.applyNameReplacer(str, true)
-	if !ns.SingularTable {
-		name = prefix + inflection.Plural(ns.applyNameReplacer(str, true))
-	}
-
-	return ns.normalizeQualifiedIdent(name)
-}
-
-// RelationshipFKName generate fk name for relation
-func (ns NamingStrategy) RelationshipFKName(rel schema.Relationship) (name string) {
-	table := rel.Schema.Table
-	if IsQuoted(table) {
-		table = strings.Trim(table, `"`)
-		return quote(ns.formatName("fk", table, ns.applyNameReplacer(rel.Name, true)))
-	}
-
-	return ns.normalizeQualifiedIdent(ns.formatName("fk", table, ns.applyNameReplacer(rel.Name, true)))
-}
-
-// CheckerName generate checker name
-func (ns NamingStrategy) CheckerName(table, column string) (name string) {
-	if IsQuoted(table) {
-		table = strings.Trim(table, `"`)
-		return quote(ns.formatName("chk", table, ns.applyNameReplacer(column, true)))
-	}
-	return ns.normalizeQualifiedIdent(ns.formatName("chk", table, ns.applyNameReplacer(column, true)))
-}
-
-// IndexName generate index name
-func (ns NamingStrategy) IndexName(table, column string) (name string) {
-	if IsQuoted(table) {
-		table = strings.Trim(table, `"`)
-		return quote(ns.formatName("idx", table, ns.applyNameReplacer(column, true)))
-	}
-	return ns.normalizeQualifiedIdent(ns.formatName("idx", table, ns.applyNameReplacer(column, true)))
-}
-
-// UniqueName generate unique constraint name
-func (ns NamingStrategy) UniqueName(table, column string) (name string) {
-	if IsQuoted(table) {
-		table = strings.Trim(table, `"`)
-		return quote(ns.formatName("uni", table, ns.applyNameReplacer(column, true)))
-	}
-	return ns.normalizeQualifiedIdent(ns.formatName("uni", table, ns.applyNameReplacer(column, true)))
-}
-
-func (ns NamingStrategy) formatName(prefix, table, name string) string {
-	formattedName := strings.ReplaceAll(strings.Join([]string{
-		prefix, table, name,
-	}, "_"), ".", "_")
-
-	if ns.IdentifierMaxLength == 0 {
-		ns.IdentifierMaxLength = 64
-	}
-
-	if utf8.RuneCountInString(formattedName) > ns.IdentifierMaxLength {
-		h := sha1.New()
-		h.Write([]byte(formattedName))
-		bs := h.Sum(nil)
-
-		formattedName = formattedName[0:ns.IdentifierMaxLength-8] + hex.EncodeToString(bs)[:8]
-	}
-	return formattedName
-}
-
-var (
-	// https://github.com/golang/lint/blob/master/lint.go#L770
-	commonInitialisms = []string{"API", "ASCII", "CPU", "CSS", "DNS", "EOF", "GUID", "HTML", "HTTP", "HTTPS", "ID", "IP", "JSON", "LHS", "QPS", "RAM", "RHS", "RPC", "SLA", "SMTP", "SSH", "TLS", "TTL", "UID", "UI", "UUID", "URI", "URL", "UTF8", "VM", "XML", "XSRF", "XSS"}
-)
-
-func init() {
-	for _, initialism := range commonInitialisms {
-		strcase.ConfigureAcronym(initialism, initialism)
+	switch ns.PreferredCase {
+	case ScreamingSnakeCase:
+		// We avoid quotes unless required; Oracle will store as UPPERCASE when unquoted.
+		return strcase.ToScreamingSnake(column)
+	case SnakeCase:
+		// You emit quoted exact snake_case in DDL, but DBName should be the inner literal.
+		return strcase.ToSnake(column)
+	case CamelCase:
+		// Same: DBName is inner literal; quoting is a SQL rendering concern.
+		return strcase.ToCamel(column)
+	default:
+		return column
 	}
 }
 
-func (ns NamingStrategy) applyNameReplacer(name string, unquote ...any) string {
-	removeQuotes := len(unquote) > 0
+// JoinTableName applies the same rules as TableName for join tables.
+func (ns *NamingStrategy) JoinTableName(joinTable string) string {
+	return ns.TableName(joinTable)
+}
 
-	if name == "" {
-		return ""
+// RelationshipFKName builds a deterministic FK constraint name honoring Oracle's 30-byte cap.
+// We generate an unqualified, safe token (A–Z, 0–9, _) and let QuoteTo add quotes only if required elsewhere.
+func (ns *NamingStrategy) RelationshipFKName(rel schema.Relationship) string {
+	// base table
+	var baseTable string
+	if rel.JoinTable != nil && rel.JoinTable.Table != "" {
+		baseTable = rel.JoinTable.Table
+	} else if rel.FieldSchema != nil && rel.FieldSchema.Table != "" {
+		baseTable = rel.FieldSchema.Table
+	} else if rel.Schema != nil && rel.Schema.Table != "" {
+		baseTable = rel.Schema.Table
+	} else {
+		baseTable = rel.Name
 	}
-	if IsQuoted(name) {
-		if removeQuotes {
-			name = name[1 : len(name)-1]
+
+	// collect columns (prefer ForeignKey; else PrimaryKey)
+	cols := make([]string, 0, len(rel.References))
+	for _, ref := range rel.References {
+		switch {
+		case ref.ForeignKey != nil && ref.ForeignKey.DBName != "":
+			cols = append(cols, ref.ForeignKey.DBName)
+		case ref.PrimaryKey != nil && ref.PrimaryKey.DBName != "":
+			cols = append(cols, ref.PrimaryKey.DBName)
+		}
+	}
+	if len(cols) == 0 {
+		cols = []string{rel.Name}
+	}
+
+	// stable ordering for composite keys
+	sort.Strings(cols)
+
+	return ns.genToken("FK", baseTable, strings.Join(cols, "_"))
+}
+
+// CheckerName builds a CHECK constraint name: CK_<TABLE>_<COLUMN...>, capped to Oracle limits.
+func (ns *NamingStrategy) CheckerName(table, column string) string {
+	return ns.genToken("CK", table, column)
+}
+
+// IndexName builds a unique index name(table, hint) -> IDX_<TABLE>_<HINT>_<FNV8>, capped to IdentifierMaxLength
+func (ns *NamingStrategy) IndexName(table, column string) string {
+	return ns.genToken("IDX", table, column)
+}
+
+// UniqueName builds a unique index/constraint name: UK_<TABLE>_<COLUMN...>, capped to Oracle limits.
+func (ns *NamingStrategy) UniqueName(table, column string) string {
+	return ns.genToken("UK", table, column)
+}
+
+// region -------------------- helpers for generated identifiers --------------------
+
+// genToken returns an Oracle-safe, schema-unique name like KIND_<TABLE>[...HASH].
+// It disambiguates quoted vs. unquoted twins by hashing the *dictionary-case*
+// (OWNER, OBJECT, COLS...). It also respects Oracle's 30/128-byte limit.
+func (ns *NamingStrategy) genToken(kind string, tableOrObject string, cols ...string) string {
+	// Defaults
+	maxLength := ns.IdentifierMaxLength
+	if maxLength <= 0 {
+		maxLength = ns.capIdentifierMaxLength
+	}
+
+	// 1) Dictionary-case anchor (handles quoted vs unquoted correctly)
+	owner, object, _ := ns.dictQualifiedParts(tableOrObject) // object: exact if quoted, UPPER if unquoted
+
+	// 2) Human-readable base: KIND_<OBJECT> (UPPER_SNAKE for safety)
+	baseObj := ns.toCase(object)
+	base := kind + "_" + baseObj
+	for _, c := range cols {
+		base += "_" + ns.toCase(c)
+	}
+
+	// 3) Build uniqueness seed across schema + object + columns (also in dictionary-case)
+	var seed strings.Builder
+	seed.WriteString(owner)
+	seed.WriteByte('.')
+	seed.WriteString(object)
+	for _, c := range cols {
+		seed.WriteByte('|')
+		seed.WriteString(ns.dictCasePart(c))
+	}
+
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(seed.String()))
+	suffix := fmt.Sprintf("_%08X", h.Sum32()) // 9 chars including underscore
+
+	name := base
+	if len(name) <= maxLength {
+		return name
+	}
+
+	// Trim the object portion first, keep KIND_ and the hash suffix
+	// Total len = len(kind) + 1 + len(trimmedObj) + len(suffix)
+	maxObj := maxLength - (len(kind) + 1 + len(suffix))
+	if maxObj < 1 {
+		// Pathological: fall back to KIND_<HASH>, and truncate if still too long
+		name = kind + suffix
+		if len(name) > maxLength {
+			return name[:maxLength]
 		}
 		return name
 	}
-	if IsReservedWord(name) {
-		name = quoteIdent(name)
+	if maxObj > len(baseObj) {
+		maxObj = len(baseObj)
 	}
-
-	if ns.NameReplacer != nil {
-		tmpName := ns.NameReplacer.Replace(name)
-
-		if tmpName == "" {
-			return name
-		}
-
-		name = tmpName
-	}
-
-	return name
+	return kind + "_" + baseObj[:maxObj] + suffix
 }
 
-// Assumes you already have a Dialector interface type in this package
-// that exposes NamingCaseSensitive (as in your earlier snippets).
+// endregion
 
-// normalizeIdent transforms a single Oracle identifier according to the
-// Dialector's NamingCaseSensitive setting and Oracle rules.
-// - If already quoted → passthrough exactly.
-// - If NamingCaseSensitive == false (Oracle-default semantics):
-//   - Identifier must be representable unquoted (^[A-Za-z][A-Za-z0-9_$#]{0,29}$), else error.
-//   - Fold to UPPERCASE.
-//   - If it is a reserved word → quote it (preserve original spelling inside quotes).
+// region ---------- helpers: case transforms ----------
+
+// IsSafeOracleUnquoted
 //
-// - If NamingCaseSensitive == true:
-//   - If valid unquoted and not reserved → leave unquoted as-is.
-//   - Otherwise → quote (preserve original spelling; escape inner quotes).
+// Unquoted identifiers:
+// - are stored uppercase
+// - must begin with a letter
+// - may contain A–Z, 0–9, _, $, #
+// - must not be a reserved word
 //
-// Returns the rendered identifier (possibly quoted), a flag indicating whether it’s quoted, or an error.
-func (ns NamingStrategy) normalizeIdent(in string) (string, bool, error) {
-	name := strings.TrimSpace(in)
-	if name == "" {
-		return "", false, fmt.Errorf("empty identifier")
+// Input s must already be in its target case for the chosen mode.
+//
+// Returns true if s can be emitted unquoted safely.
+func IsSafeOracleUnquoted(s string) bool {
+	if s == "" {
+		return false
 	}
-
-	// If caller already quoted → never touch casing or content.
-	if IsQuoted(name) {
-		return name, true, nil
+	r0 := rune(s[0])
+	if !('A' <= r0 && r0 <= 'Z') {
+		return false
 	}
-
-	ignoreCase := !ns.NamingCaseSensitive
-
-	// Case-insensitive (Oracle default) path.
-	if ignoreCase {
-		if !validUnquoted(name) {
-			return "", false, fmt.Errorf("identifier %q not representable unquoted with NamingCaseSensitive=false", name)
+	for _, r := range s {
+		switch {
+		case 'A' <= r && r <= 'Z':
+		case '0' <= r && r <= '9':
+		case r == '_' || r == '$' || r == '#':
+		default:
+			return false
 		}
-		up := strings.ToUpper(name)
-		if IsReservedWord(up) {
-			return quoteIdent(up), true, nil // preserve original spelling inside quotes
-		}
-		up = ns.toPreferredCase(name)
-		return up, false, nil
 	}
-
-	// Case-sensitive path.
-	upper := strings.ToUpper(name)
-	if validUnquoted(name) && !IsReservedWord(upper) {
-		name = ns.toPreferredCase(name)
-		return name, false, nil // leave as-is, unquoted
+	up := strings.ToUpper(s)
+	if IsReservedWord(up) {
+		return false
 	}
-	return quoteIdent(upper), true, nil
+	return true
 }
 
-func (ns NamingStrategy) toPreferredCase(in string) string {
+// IsExplicitQuoted Detects explicit user-quoted literal: (example: "Name")
+func IsExplicitQuoted(part string) (inner string, ok bool) {
+	if len(part) >= 2 && part[0] == '"' && part[len(part)-1] == '"' {
+		return part[1 : len(part)-1], true
+	}
+	return "", false
+}
+
+// Split OWNER.TABLE (preserves quotes)
+func splitQualified(input string) []string {
+	var parts []string
+	var b strings.Builder
+	quoted := false
+	for _, r := range input {
+		switch r {
+		case '"':
+			quoted = !quoted
+			b.WriteRune(r)
+		case '.':
+			if quoted {
+				b.WriteRune(r)
+			} else {
+				parts = append(parts, b.String())
+				b.Reset()
+			}
+		default:
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() > 0 {
+		parts = append(parts, b.String())
+	}
+	return parts
+}
+
+type qualifier struct {
+	name   string
+	quoted bool
+}
+
+func (ns *NamingStrategy) joinQualified(parts []qualifier) string {
+	maxLength := ns.IdentifierMaxLength
+	if maxLength <= 0 {
+		maxLength = ns.capIdentifierMaxLength
+	}
+	var out strings.Builder
+	for i, p := range parts {
+		if i > 0 {
+			out.WriteByte('.')
+		}
+		name := ns.shortenWithMax(p.name, maxLength)
+		if p.quoted {
+			out.WriteByte('"')
+			for _, r := range name {
+				if r == '"' {
+					out.WriteString(`""`)
+				} else {
+					out.WriteRune(r)
+				}
+			}
+			out.WriteByte('"')
+		} else {
+			out.WriteString(name)
+		}
+	}
+	return out.String()
+}
+
+// FNV-1a suffix for capped names (Oracle 30-byte max)
+func (ns *NamingStrategy) shortenIfNeeded(s string) string {
+	maxLength := ns.IdentifierMaxLength
+	if maxLength <= 0 {
+		maxLength = ns.capIdentifierMaxLength
+	}
+	return ns.shortenWithMax(s, maxLength)
+}
+
+func (ns *NamingStrategy) shortenWithMax(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(s))
+	sum := h.Sum32()
+	const hexdigits = "0123456789ABCDEF"
+	hexValue := func(v uint32) string {
+		b := make([]byte, 8)
+		for i := 7; i >= 0; i-- {
+			b[i] = hexdigits[v&0xF]
+			v >>= 4
+		}
+		return string(b)
+	}(sum)
+	const sufLen = 1 + 8
+	if maxLen <= sufLen {
+		return hexValue
+	}
+	return s[:maxLen-sufLen] + "_" + hexValue
+}
+
+func (ns *NamingStrategy) toCase(part string) string {
 	switch ns.PreferredCase {
 	case ScreamingSnakeCase:
-		return strcase.ToScreamingSnake(in)
+		// Already uppercased by ToScreamingSnake; ensures A_Z0_9 underscores.
+		return strcase.ToScreamingSnake(part)
 	case SnakeCase:
-		return strcase.ToSnake(in)
+		return strcase.ToSnake(part)
 	case CamelCase:
-		return strcase.ToCamel(in)
+		return strcase.ToCamel(part)
+	default:
+		return part
 	}
-
-	return in
 }
 
-// normalizeQualifiedIdent applies normalizeIdent to each part of a schema-qualified name.
-// Example inputs: "schema.table", "table".
-// If any part errors (e.g., invalid in NamingCaseSensitive=false), the function returns the original input.
-func (ns NamingStrategy) normalizeQualifiedIdent(in string) string {
-	parts := strings.Split(strings.TrimSpace(in), ".")
-	if len(parts) == 0 {
-		return in
+// endregion
+
+// region ---------- Normalization according to PreferredCase + NamingCaseSensitive ----------
+//
+// Rules:
+//
+//	ScreamingSnakeCase:
+//	  - if NamingCaseSensitive=false  -> emit UNQUOTED UPPER_SNAKE (always)
+//	  - if NamingCaseSensitive=true   -> avoid quotes unless required; use UPPER_SNAKE when unquoted
+//	SnakeCase or CamelCase: coerce to quoted exact case always.
+//
+// Explicit quotes in the input (tags like column:"\"Weird\"") are honored: always quoted exact.
+func (ns *NamingStrategy) normalizePart(part string) (name string, quoted bool) {
+	// Explicitly quoted literal -> preserve exact, always quoted
+	if inner, ok := IsExplicitQuoted(part); ok {
+		return inner, true
 	}
-	out := make([]string, len(parts))
-	for i, p := range parts {
-		frag, _, err := ns.normalizeIdent(p)
-		if err != nil {
-			return in // return original on error
+
+	switch ns.PreferredCase {
+	case ScreamingSnakeCase:
+		canon := ns.toCase(part) // already UPPER_SNAKE
+		if !ns.NamingCaseSensitive {
+			// always unquoted UPPER_SNAKE unless reserved (then quote)
+			if IsSafeOracleUnquoted(canon) {
+				return canon, false
+			}
+			return canon, true
 		}
-		out[i] = frag
+		// namingCaseSensitive==true -> avoid quotes unless required
+		if IsSafeOracleUnquoted(canon) {
+			return canon, false
+		}
+		return canon, true
+
+	case SnakeCase, CamelCase:
+		// Coerce to quoted exact snake_case
+		return ns.toCase(part), true
+
+	default:
+		// Defensive: fall back to unquoted upper
+		up := strings.ToUpper(part)
+		return up, false
 	}
-	return strings.Join(out, ".")
 }
 
-// --- helpers ---
-
-// Oracle unquoted identifier: starts with letter; then letters/digits/_ $ #; max 30 chars.
-var validUnquotedRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_$#]{0,64}$`)
-
-func validUnquoted(s string) bool {
-	return validUnquotedRE.MatchString(s)
+// Apply normalization to each dotted part
+func (ns *NamingStrategy) normalizeQualified(ident string) string {
+	if ident == "" {
+		return ""
+	}
+	raw := splitQualified(ident)
+	out := make([]qualifier, 0, len(raw))
+	for _, p := range raw {
+		n, q := ns.normalizePart(p)
+		out = append(out, qualifier{name: n, quoted: q})
+	}
+	return ns.joinQualified(out)
 }
 
-// quoteIdent wraps s in double quotes and escapes any embedded double quotes.
-func quoteIdent(s string) string {
-	if IsQuoted(s) {
+// endregion
+
+// region ---------- Dictionary-case helpers (for Migrator queries) ----------
+
+// dictCasePart returns the value to compare against Oracle's data dictionary
+// without recasing opaque tokens (e.g., hash suffixes). If the identifier
+// would be unquoted, return UPPER(s). If it would be quoted, return s exact.
+func (ns NamingStrategy) dictCasePart(s string) string {
+	// honor explicit quotes like "\"Weird\""
+	if inner, ok := IsExplicitQuoted(s); ok {
+		return inner // dictionary stores quoted identifiers case-sensitively
+	}
+
+	// Decide if we *would* emit quotes for this part, but do NOT recase `s`.
+	switch ns.PreferredCase {
+	case SnakeCase, CamelCase:
+		// these modes always quote -> exact case
 		return s
+
+	case ScreamingSnakeCase:
+		// avoid quotes unless required; only check safety on UPPER(s)
+		up := strings.ToUpper(s)
+		if IsSafeOracleUnquoted(up) {
+			return up // dictionary matches unquoted as UPPER
+		}
+		return s // would be quoted -> exact
+	default:
+		// defensive fallback: treat as unquoted
+		return strings.ToUpper(s)
 	}
-	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
 
-func quote(s string) string {
-	if IsQuoted(s) {
-		return s
+// Returns (owner, object, hasOwner)
+func (ns *NamingStrategy) dictQualifiedParts(ident string) (owner, object string, hasOwner bool) {
+	raw := splitQualified(ident)
+	switch len(raw) {
+	case 0:
+		return "", "", false
+	case 1:
+		return "", ns.dictCasePart(raw[0]), false
+	default:
+		return ns.dictCasePart(raw[0]),
+			ns.dictCasePart(raw[1]), true
 	}
-	s = strings.ReplaceAll(s, `"`, "")
-	return fmt.Sprintf(`"%s"`, s)
 }
 
-// IsQuoted returns true if s is already a double-quoted SQL identifier.
-func IsQuoted(s string) bool {
-	return len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"'
+// endregion
+
+// region ---------- Literal helpers ----------
+// Minimal literal rendering for defaults.
+func toSQLLiteral(v interface{}) string {
+	switch x := v.(type) {
+	case bool:
+		if x {
+			return "1"
+		}
+		return "0"
+	case int:
+		return fmt.Sprintf("%d", x)
+	case int8, int16, int32, int64:
+		return fmt.Sprintf("%d", x)
+	case uint, uint8, uint16, uint32, uint64:
+		return fmt.Sprintf("%d", x)
+	case float32, float64:
+		return fmt.Sprintf("%v", x)
+	default:
+		s := fmt.Sprintf("%v", x)
+		var b strings.Builder
+		b.WriteByte('\'')
+		for _, r := range s {
+			if r == '\'' {
+				b.WriteString("''")
+			} else {
+				b.WriteRune(r)
+			}
+		}
+		b.WriteByte('\'')
+		return b.String()
+	}
 }
+
+func isUniqueClass(s string) bool { return strings.Contains(strings.ToUpper(s), "UNIQUE") }
+
+// endregion

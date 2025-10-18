@@ -244,10 +244,8 @@ func setupOracleDatabase(t require.TestingT, ctx context.Context, ignoreCase, na
 		TimeGranularity:         timeGranularity,
 		SessionTimezone:         sessionTimezone.String(),
 	}), &gorm.Config{
-		NamingStrategy: schema.NamingStrategy{
-			IdentifierMaxLength: 30,
-		},
-		Logger: l,
+		NamingStrategy: schema.NamingStrategy{},
+		Logger:         l,
 		NowFunc: func() time.Time {
 			tt := time.Now()
 			if timeGranularity < 0 {
@@ -284,16 +282,14 @@ func getTestGormConfig(logWriter logger.Interface) *gorm.Config {
 		Logger:                                   logWriter,
 		DisableForeignKeyConstraintWhenMigrating: false,
 		IgnoreRelationshipsWhenMigrating:         false,
-		NamingStrategy: schema.NamingStrategy{
-			IdentifierMaxLength: 30,
-		},
+		NamingStrategy:                           schema.NamingStrategy{},
 	}
 }
 
 type TestTableTime struct {
 	ID   uint64    `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
 	Name *string   `gorm:"column:name;size:50;comment:User Name" json:"name"`
-	Time time.Time `gorm:"column:time;type:timestamp with time zone;comment:User Time" json:"time"`
+	Time time.Time `gorm:"type:timestamp with time zone;comment:User Time" json:"time"`
 }
 
 func (TestTableTime) TableName() string {
@@ -303,7 +299,7 @@ func (TestTableTime) TableName() string {
 type TestTableUUID struct {
 	ID   uint64    `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
 	Name string    `gorm:"column:name;size:50;comment:User Name" json:"name"`
-	User uuid.UUID `gorm:"column:user;type:uuid;comment:User UUID" json:"user"`
+	User uuid.UUID `gorm:"type:uuid;comment:User UUID" json:"user"`
 }
 
 func (TestTableUUID) TableName() string {
@@ -313,7 +309,7 @@ func (TestTableUUID) TableName() string {
 type TestTableULID struct {
 	ID   uint64    `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
 	Name string    `gorm:"column:name;size:50;comment:User Name" json:"name"`
-	User ulid.ULID `gorm:"column:user;type:ulid;comment:User ULID" json:"user"`
+	User ulid.ULID `gorm:"type:ulid;comment:User ULID" json:"user"`
 }
 
 func (TestTableULID) TableName() string {
@@ -333,7 +329,7 @@ func (TestTableGUUID) TableName() string {
 type TestTableGofrsUUID struct {
 	ID   uint64     `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
 	Name string     `gorm:"column:name;size:50;comment:User Name" json:"name"`
-	User gofrs.UUID `gorm:"column:user;type:uuid;comment:User UUID" json:"user"`
+	User gofrs.UUID `gorm:"comment:User UUID" json:"user"`
 }
 
 func (TestTableGofrsUUID) TableName() string {
@@ -399,14 +395,14 @@ func TestGUUIDType(t *testing.T) {
 	}
 	result := db.Create([]*TestTableGUUID{test0, test00})
 	require.NoError(t, result.Error, "expecting no error")
-	require.EqualValuesf(t, result.RowsAffected, int64(2), "expecting two records created")
-	require.EqualValuesf(t, test0.ID, int64(1), "expecting ID to be 1")
+	require.EqualValuesf(t, int64(2), result.RowsAffected, "expecting two records created")
+	require.EqualValuesf(t, int64(1), test0.ID, "expecting ID to be 1")
 	test1 := &TestTableGUUID{
 		ID: test0.ID,
 	}
 	result = db.Find(test1)
 	require.NoError(t, result.Error, "expecting no error")
-	require.EqualValuesf(t, test1.ID, int64(1), "expecting ID to be 1")
+	require.EqualValuesf(t, int64(1), test1.ID, "expecting ID to be 1")
 	require.EqualValuesf(t, u, test1.User, "expecting User to match")
 
 	test2 := &TestTableGUUID{}
@@ -670,11 +666,13 @@ func TestReturningInto(t *testing.T) {
 	assert.NoError(t, res.Error, "expecting no error updating Name")
 	assert.EqualValuesf(t, "Alice", model.Name, "expecting Name to be 'Alice' was %s", model.Name)
 
-	// Updates will not update the model unless the Returning clause is used
-	res = db.WithContext(currentContext()).Model(model).Updates(map[string]any{"name": "Zulu", "user_type": clause.Expr{SQL: "user_type + 1"}})
+	// Updates will update deterministic fields but not expressions
+	// unless Clauses(clause.Returning{}) is used.
+	res = db.WithContext(currentContext()).Model(model).Updates(map[string]any{"NAME": "Zulu", "USER_TYPE": clause.Expr{SQL: "USER_TYPE + 1"}})
 	assert.NoError(t, res.Error, "expecting no error updating name and user_type")
-	assert.EqualValuesf(t, "Alice", model.Name, "expecting Name to be 'Alice' was %s", model.Name)
+	assert.EqualValuesf(t, "Zulu", model.Name, "expecting Name to be 'Alice' was %s", model.Name)
 	assert.EqualValuesf(t, 1, model.UserType, "expecting UserType to be unchanged at 1 was %d", model.UserType)
+	// Note that the UserType was, in fact, updated in-place to 2
 	res = db.WithContext(currentContext()).First(model)
 	assert.NoError(t, res.Error, "expecting no error re-finding first")
 	assert.EqualValuesf(t, "Zulu", model.Name, "expecting Name to be 'Zulu' was %s", model.Name)
@@ -735,13 +733,13 @@ func TestReturning(t *testing.T) {
 	model.Name = "Bob"
 	model.Sex = "m"
 	model.Enabled = true
-	model.PEnabled = ptr(true)
+	model.Penabled = ptr(true)
 	res = db.WithContext(currentContext()).Updates(model)
 	assert.NoError(t, res.Error, "expecting no error")
 	assert.Equal(t, "Bob", model.Name, "expecting 'Bob'")
 	assert.Equal(t, "m", model.Sex, "expecting 'm'")
 	assert.Equal(t, true, model.Enabled, "expecting 'true'")
-	assert.Equal(t, ptr(true), model.PEnabled, "expecting '*true'")
+	assert.Equal(t, ptr(true), model.Penabled, "expecting '*true'")
 
 	m := map[string]any{
 		"name":    "Alice",
@@ -763,7 +761,7 @@ func TestReturning(t *testing.T) {
 	assert.Equal(t, modelId, model.ID)
 	assert.Equal(t, "b", model.Sex, "expecting 'b'")
 
-	model.PEnabled = ptr(false)
+	model.Penabled = ptr(false)
 	res = db.WithContext(currentContext()).Model(&model).Clauses(clause.Returning{}).Updates(map[string]any{
 		"name":      "charlie",
 		"sex":       "m",
@@ -776,21 +774,21 @@ func TestReturning(t *testing.T) {
 	assert.Equal(t, "charlie", model.Name, "expecting 'charlie'")
 	assert.Equal(t, "m", model.Sex, "expecting 'm'")
 	assert.Equal(t, true, model.Enabled, "expecting 'true'")
-	assert.Equal(t, ptr(true), model.PEnabled, "expecting '*true'")
+	assert.Equal(t, ptr(true), model.Penabled, "expecting '*true'")
 
 	tm := &TestTableUser{
 		ID:   modelId,
 		Name: "doug",
 	}
-	res = db.WithContext(currentContext()).Clauses(clause.Returning{}).Updates(tm)
+	res = db.WithContext(currentContext()).Model(tm).Clauses(clause.Returning{}).Updates(tm)
 	assert.NoError(t, res.Error, "expecting no error")
-	assert.Equal(t, modelId, model.ID)
+	assert.Equal(t, model.ID, tm.ID)
 	assert.Equal(t, "doug", tm.Name, "expecting 'doug'")
 	assert.Equal(t, "m", tm.Sex, "expecting 'm'")
 	assert.Equal(t, true, tm.Enabled, "expecting 'true'")
 	assert.Equal(t, 2, tm.UserType, "expecting '2'")
 	assert.Equal(t, theBirthday.Format("2006-01-02 15:04:05"), tm.Birthday.Format("2006-01-02 15:04:05"), "expecting '1978-05-01 00:00:00'")
-	assert.Equal(t, true, *tm.PEnabled, "expecting '(*bool)true'")
+	assert.Equal(t, true, *tm.Penabled, "expecting '(*bool)true'")
 
 	ttm := &TestTableUser{
 		ID:   modelId,
@@ -804,7 +802,7 @@ func TestReturning(t *testing.T) {
 	assert.Equal(t, false, ttm.Enabled, "expecting 'false'")
 	assert.Equal(t, 0, ttm.UserType, "expecting '0'")
 	assert.Nil(t, ttm.Birthday, "expecting '(*time.Time)nil'")
-	assert.Nil(t, ttm.PEnabled, "expecting '(*bool)nil'")
+	assert.Nil(t, ttm.Penabled, "expecting '(*bool)nil'")
 }
 
 func ptr[T any](v T) *T {
@@ -1073,7 +1071,8 @@ func Test_reflectDereference(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equalf(t, tt.want, reflectDereference(tt.args.obj), "reflectDereference(%v)", tt.args.obj)
+			v, _ := reflectDereference(tt.args.obj)
+			assert.Equalf(t, tt.want, v, "reflectDereference(%v)", tt.args.obj)
 		})
 	}
 }

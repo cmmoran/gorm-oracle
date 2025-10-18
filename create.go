@@ -3,6 +3,7 @@ package oracle
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/sijms/go-ora/v2"
 	"gorm.io/gorm"
@@ -51,18 +52,16 @@ func Create(db *gorm.DB) {
 		} else {
 			stmt.AddClauseIfNotExists(clause.Insert{})
 			stmt.AddClause(clause.Values{Columns: createValues.Columns, Values: [][]interface{}{createValues.Values[0]}})
-
-			stmt.Build("INSERT", "VALUES")
-			outputInserted(db)
+			if returning := ReturningFieldsWithDefaultDBValue(stmtSchema, &createValues); len(returning.Names) > 0 {
+				stmt.AddClause(returning)
+				stmt.Build("INSERT", "VALUES", "RETURNING")
+			} else {
+				stmt.Build("INSERT", "VALUES")
+			}
 		}
 
 		if !db.DryRun && db.Error == nil {
 			if hasConflict {
-				for i, val := range stmt.Vars {
-					// HACK: replace values one by one, assuming its value layout will be the same all the time, i.e. aligned
-					stmt.Vars[i] = convertValue(val)
-				}
-
 				result, err := stmt.ConnPool.ExecContext(stmt.Context, stmt.SQL.String(), stmt.Vars...)
 				if db.AddError(err) == nil {
 					db.RowsAffected, _ = result.RowsAffected()
@@ -71,8 +70,7 @@ func Create(db *gorm.DB) {
 			} else {
 				for idx, values := range createValues.Values {
 					for i, val := range values {
-						// HACK: replace values one by one, assuming its value layout will be the same all the time, i.e. aligned
-						stmt.Vars[i] = convertValue(val)
+						stmt.Vars[i] = val
 					}
 
 					result, err := stmt.ConnPool.ExecContext(stmt.Context, stmt.SQL.String(), stmt.Vars...)
@@ -104,7 +102,7 @@ func outputInserted(db *gorm.DB) {
 	for idx, field := range stmtSchema.FieldsWithDefaultDBValue {
 		columns[idx] = clause.Column{Name: field.DBName}
 	}
-	_, _ = stmt.WriteString("/*- -*/")
+	_, _ = stmt.WriteString("/*- -*/ ")
 	_, _ = stmt.WriteString("RETURNING ")
 	for idx, f := range stmtSchema.FieldsWithDefaultDBValue {
 		if idx > 0 {
@@ -128,6 +126,69 @@ func outputInserted(db *gorm.DB) {
 	}
 }
 
+// asRaw16 returns a 16-byte slice if v is any T or *T whose underlying type is [16]byte,
+// or a []byte of length 16, or a UUID string in canonical form.
+func asRaw16(v reflect.Value) ([]byte, bool) {
+	// Fully unwrap interface and pointer layers
+	for v.IsValid() && (v.Kind() == reflect.Interface || v.Kind() == reflect.Ptr) {
+		if v.IsNil() {
+			return nil, true // NULL
+		}
+		v = v.Elem()
+	}
+
+	// [16]byte or named type with underlying [16]byte
+	if v.IsValid() && v.Kind() == reflect.Array && v.Len() == 16 && v.Type().Elem().Kind() == reflect.Uint8 {
+		b := make([]byte, 16)
+		for i := 0; i < 16; i++ {
+			b[i] = byte(v.Index(i).Uint())
+		}
+		return b, true
+	}
+
+	// UUID-ish string (with or without '-')
+	if v.IsValid() && v.Kind() == reflect.String {
+		s := v.String()
+		// Remove hyphens if present
+		if strings.ContainsRune(s, '-') {
+			buf := make([]byte, 0, 32)
+			for i := 0; i < len(s); i++ {
+				if s[i] != '-' {
+					buf = append(buf, s[i])
+				}
+			}
+			s = string(buf)
+		}
+
+		if len(s) == 32 {
+			out := make([]byte, 16)
+			for i := 0; i < 16; i++ {
+				h1, ok1 := fromHex(s[i*2])
+				h2, ok2 := fromHex(s[i*2+1])
+				if !ok1 || !ok2 {
+					goto notuuid
+				}
+				out[i] = (h1 << 4) | h2
+			}
+			return out, true
+		}
+	}
+notuuid:
+	return nil, false
+}
+
+func fromHex(r byte) (byte, bool) {
+	switch {
+	case '0' <= r && r <= '9':
+		return r - '0', true
+	case 'a' <= r && r <= 'f':
+		return r - 'a' + 10, true
+	case 'A' <= r && r <= 'F':
+		return r - 'A' + 10, true
+	}
+	return 0, false
+}
+
 func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values) {
 	dummyTable := getDummyTable(db)
 
@@ -146,7 +207,19 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 				_ = db.Statement.WriteByte(',')
 			}
 			column := values.Columns[i]
-			db.Statement.AddVar(db.Statement, v)
+			var (
+				dataType  string
+				precision int
+				notnull   bool
+			)
+			if db.Statement.Schema != nil {
+				if f := db.Statement.Schema.LookUpField(column.Name); f != nil {
+					dataType = db.Statement.DataTypeOf(f)
+					precision = f.Precision
+					notnull = f.NotNull
+				}
+			}
+			db.Statement.AddVar(db.Statement, convertValue(v, dataType, precision, notnull))
 			_, _ = db.Statement.WriteString(" AS ")
 			db.Statement.WriteQuoted(column.Name)
 		}
@@ -170,6 +243,21 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 
 	if len(onConflict.DoUpdates) > 0 {
 		_, _ = db.Statement.WriteString(" WHEN MATCHED THEN UPDATE SET ")
+		for idx := range onConflict.DoUpdates {
+			var (
+				dataType  string
+				precision int
+				notnull   bool
+			)
+			if db.Statement.Schema != nil {
+				if f := db.Statement.Schema.LookUpField(onConflict.DoUpdates[idx].Column.Name); f != nil {
+					dataType = db.Statement.DataTypeOf(f)
+					precision = f.Precision
+					notnull = f.NotNull
+				}
+			}
+			onConflict.DoUpdates[idx].Value = convertValue(onConflict.DoUpdates[idx].Value, dataType, precision, notnull)
+		}
 		onConflict.DoUpdates.Build(db.Statement)
 	}
 
@@ -204,27 +292,9 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 	_, _ = db.Statement.WriteString(")")
 }
 
-func convertValue(val interface{}) interface{} {
-	val = reflectDereference(val)
-	switch v := val.(type) {
-	case bool:
-		if v {
-			val = 1
-		} else {
-			val = 0
-		}
-	case string:
-		if len(v) > 2000 {
-			val = go_ora.Clob{String: v, Valid: true}
-		}
-	default:
-		val = convertCustomType(val)
-	}
-	return val
-}
-
 func getDummyTable(db *gorm.DB) (dummyTable string) {
-	switch d := reflectDereference(db.Dialector).(type) {
+	v, _ := reflectDereference(db.Dialector)
+	switch d := v.(type) {
 	case Dialector:
 		dummyTable = d.DummyTableName()
 	default:

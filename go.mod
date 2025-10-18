@@ -7,7 +7,9 @@ replace github.com/sijms/go-ora/v2 => github.com/cmmoran/go-ora/v2 v2.0.0-202509
 require (
 	github.com/docker/go-connections v0.6.0
 	github.com/emirpasic/gods/v2 v2.0.0-alpha
+	github.com/godoes/gorm-oracle v1.6.17
 	github.com/gofrs/uuid/v3 v3.1.2
+	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/iancoleman/strcase v0.3.0
 	github.com/jinzhu/inflection v1.0.0
@@ -34,6 +36,7 @@ require (
 	github.com/docker/docker v28.3.3+incompatible // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.8.4 // indirect
+	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

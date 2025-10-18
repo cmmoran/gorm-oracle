@@ -5,65 +5,59 @@ import (
 	"sort"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/schema"
-	"gorm.io/gorm/utils"
 )
 
-func Update(config *callbacks.Config) func(db *gorm.DB) {
-	_ = utils.Contains(config.UpdateClauses, "RETURNING")
+func Update(db *gorm.DB) {
+	if db.Error != nil {
+		return
+	}
 
-	return func(db *gorm.DB) {
-		if db.Error != nil {
-			return
+	stmt := db.Statement
+	if stmt == nil {
+		return
+	}
+
+	if stmtSchema := stmt.Schema; stmtSchema != nil {
+		for _, c := range stmtSchema.UpdateClauses {
+			stmt.AddClause(c)
 		}
+	}
 
-		stmt := db.Statement
-		if stmt == nil {
-			return
-		}
-
-		if stmtSchema := stmt.Schema; stmtSchema != nil {
-			for _, c := range stmtSchema.UpdateClauses {
-				stmt.AddClause(c)
+	if stmt.SQL.Len() == 0 {
+		stmt.SQL.Grow(180)
+		stmt.AddClauseIfNotExists(clause.Update{})
+		if _, ok := stmt.Clauses["SET"]; !ok {
+			if set := ConvertToAssignments(stmt); len(set) != 0 {
+				defer delete(stmt.Clauses, "SET")
+				stmt.AddClause(set)
+			} else {
+				return
 			}
 		}
 
-		if stmt.SQL.Len() == 0 {
-			stmt.SQL.Grow(180)
-			stmt.AddClauseIfNotExists(clause.Update{})
-			if _, ok := stmt.Clauses["SET"]; !ok {
-				if set := ConvertToAssignments(stmt); len(set) != 0 {
-					defer delete(stmt.Clauses, "SET")
-					stmt.AddClause(set)
-				} else {
-					return
-				}
-			}
+		stmt.Build(stmt.BuildClauses...)
+	}
 
-			stmt.Build(stmt.BuildClauses...)
+	checkMissingWhereConditions(db)
+
+	if !db.DryRun && db.Error == nil {
+		result, err := stmt.ConnPool.ExecContext(stmt.Context, stmt.SQL.String(), stmt.Vars...)
+
+		if err != nil && err.Error() == "output parameter should be pointer type" {
+			// Note: this error comes from go-ora when the update execution fails and the go_ora.Out{Dest} fields are set to nil
+			if _, hasReturning := stmt.Clauses[clause.Returning{}.Name()]; hasReturning {
+				err = nil
+			}
+			db.RowsAffected = 0
+		} else if db.AddError(err) == nil {
+			db.RowsAffected, _ = result.RowsAffected()
 		}
 
-		checkMissingWhereConditions(db)
-
-		if !db.DryRun && db.Error == nil {
-			result, err := stmt.ConnPool.ExecContext(stmt.Context, stmt.SQL.String(), stmt.Vars...)
-
-			if err != nil && err.Error() == "output parameter should be pointer type" {
-				// Note: this error comes from go-ora when the update execution fails and the go_ora.Out{Dest} fields are set to nil
-				if _, hasReturning := stmt.Clauses[clause.Returning{}.Name()]; hasReturning {
-					err = nil
-				}
-				db.RowsAffected = 0
-			} else if db.AddError(err) == nil {
-				db.RowsAffected, _ = result.RowsAffected()
-			}
-
-			if stmt.Result != nil {
-				stmt.Result.Result = result
-				stmt.Result.RowsAffected = db.RowsAffected
-			}
+		if stmt.Result != nil {
+			stmt.Result.Result = result
+			stmt.Result.RowsAffected = db.RowsAffected
 		}
 	}
 }
@@ -236,7 +230,7 @@ func ConvertToAssignments(stmt *gorm.Statement) (set clause.Set) {
 							}
 
 							if (ok || !isZero) && field.Updatable {
-								innerValue = convertCustomType(innerValue)
+								innerValue = convertValue(innerValue, stmt.DataTypeOf(field), field.Precision, field.NotNull)
 								set = append(set, clause.Assignment{Column: clause.Column{Name: field.DBName}, Value: innerValue})
 								assignField := field
 								if isDiffSchema {

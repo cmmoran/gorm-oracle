@@ -84,10 +84,12 @@ func TestCreateCaseSensitive(t *testing.T) {
 		return
 	}
 	_ = db.Migrator().DropTable(TestTableCaseSensitive{})
+	_ = db.Migrator().DropTable(TestTableCaseSensitiveRegular{})
 	err = db.WithContext(currentContext()).Migrator().AutoMigrate(TestTableCaseSensitive{})
 
 	require.NoError(t, err, "expecting no error")
 
+	_ = db.Migrator().DropTable(TestTableCaseSensitive{})
 	_ = db.Migrator().DropTable(TestTableCaseSensitiveRegular{})
 	err = db.WithContext(currentContext()).Migrator().AutoMigrate(TestTableCaseSensitiveRegular{})
 
@@ -103,7 +105,7 @@ type TestTableUserUnique struct {
 	Email       string     `gorm:"column:email;type:varchar(128);comment:Email address" json:"email"`
 	PhoneNumber string     `gorm:"column:phone_number;type:varchar(15);comment:E.164" json:"phoneNumber"`
 	Sex         string     `gorm:"column:sex;type:char(1);comment:Gender" json:"sex"`
-	Birthday    *time.Time `gorm:"column:birthday;->:false;<-:create;comment:Birthday" json:"birthday,omitempty"`
+	Birthday    *time.Time `gorm:"column:birthday;<-:create;comment:Birthday" json:"birthday,omitempty"`
 	UserType    int        `gorm:"column:user_type;size:8;comment:User type" json:"userType"`
 	Enabled     bool       `gorm:"column:enabled;comment:Is enabled" json:"enabled"`
 	Remark      string     `gorm:"column:remark;size:1024;comment:Remarks" json:"remark"`
@@ -174,7 +176,7 @@ func TestMergeCreateUnique(t *testing.T) {
 			if strings.Contains(err.Error(), "ORA-00001") {
 				t.Log(err) // ORA-00001: unique constraint violated
 				var gotData []TestTableUserUnique
-				tx = db.Where(map[string]interface{}{"uid": []string{"U1", "U2"}}).Find(&gotData)
+				tx = db.Where(map[string]any{"uid": []string{"U1", "U2"}}).Find(&gotData)
 				if err = tx.Error; err != nil {
 					t.Fatal(err)
 				} else {
@@ -256,7 +258,7 @@ type testNoDefaultDBValues struct {
 	PhoneNumber string `gorm:"column:phone_number;type:varchar(15);comment:E.164" json:"phoneNumber"`
 
 	Sex      string     `gorm:"column:sex;type:char(1);comment:Gender" json:"sex"`
-	Birthday *time.Time `gorm:"column:birthday;->:false;<-:create;comment:Birthday" json:"birthday,omitempty"`
+	Birthday *time.Time `gorm:"column:birthday;<-:create;comment:Birthday" json:"birthday,omitempty"`
 
 	UserType int `gorm:"column:user_type;size:8;comment:User type" json:"userType"`
 

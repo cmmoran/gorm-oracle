@@ -1,11 +1,11 @@
 package oracle
 
 import (
-	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
@@ -88,11 +88,8 @@ func TestMigrator_AutoMigrate(t *testing.T) {
 				if err = result.Error; err != nil {
 					t.Fatal(err)
 				}
-				gotUserBytes, _ := json.Marshal(gotUser)
-				t.Logf("gotUser Result: %s", gotUserBytes)
-				if !reflect.DeepEqual(gotUser, wantUser) {
-					wantUserBytes, _ := json.Marshal(wantUser)
-					t.Errorf("wantUser Info: %s", wantUserBytes)
+				if !reflect.DeepEqual(wantUser, gotUser) {
+					t.Errorf("diff: %s", cmp.Diff(gotUser, wantUser))
 				}
 			}
 		})
@@ -103,7 +100,7 @@ type TestTablePartialIndex struct {
 	gorm.Model
 	Name string `gorm:"column:name;size:50;comment:User Name"`
 	Age  uint8  `gorm:"column:age;size:8;comment:User Age"`
-	Sex  string `gorm:"column:sex;type:char(1);check:chk_there_can_be_only_two,lower(sex)='m' or lower(sex)='f';index:uni_there_can_be_only_two,unique,where:lower(sex) in ('m'\\,'f');"`
+	Sex  string `gorm:"column:sex;type:char(1);check:chk_there_can_be_only_two,lower(SEX)='m' or lower(SEX)='f';index:uni_there_can_be_only_two,unique,where:lower(sex) in ('m'\\,'f');"`
 }
 
 type TestTableCaseSensitive struct {
@@ -126,24 +123,24 @@ func (TestTableCaseSensitiveRegular) TableName() string {
 
 // TestTableUser Test User Information Table Model
 type TestTableUser struct {
-	ID   uint64 `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
+	ID   uint64 `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
 	UID  string `gorm:"type:varchar(50);comment:User Identity" json:"uid"`
-	Name string `gorm:"column:name;size:50;comment:User Name" json:"name"`
+	Name string `gorm:"size:50;comment:User Name" json:"name"`
 
-	Account  string `gorm:"column:account;type:varchar(50);comment:Login Account" json:"account"`
-	Password string `gorm:"column:password;type:varchar(512);comment:Login Password (Encrypted)" json:"password"`
+	Account  string `gorm:"type:varchar(50);comment:Login Account" json:"account"`
+	Password string `gorm:"type:varchar(512);comment:Login Password (Encrypted)" json:"password"`
 
-	Email       string `gorm:"column:email;type:varchar(128);comment:Email Address" json:"email"`
-	PhoneNumber string `gorm:"column:phone_number;type:varchar(15);comment:E.164" json:"phoneNumber"`
+	Email       string `gorm:"type:varchar(128);comment:Email Address" json:"email"`
+	PhoneNumber string `gorm:"type:varchar(15);comment:E.164" json:"phoneNumber"`
 
-	Sex      string     `gorm:"column:sex;type:char(1);comment:Gender" json:"sex"`
-	Birthday *time.Time `gorm:"column:birthday;->:false;<-:create;comment:Birthday" json:"birthday,omitempty"`
+	Sex      string     `gorm:"type:char(1);comment:Gender" json:"sex"`
+	Birthday *time.Time `gorm:"<-:create;comment:Birthday" json:"birthday,omitempty"`
 
-	UserType int `gorm:"column:user_type;size:8;comment:User Type" json:"userType"`
+	UserType int `gorm:"size:8;comment:User Type" json:"userType"`
 
-	Enabled  bool   `gorm:"column:enabled;comment:Is Enabled" json:"enabled"`
-	PEnabled *bool  `gorm:"column:penabled;comment:Is penabled" json:"penabled"`
-	Remark   string `gorm:"column:remark;size:1024;comment:Remark" json:"remark"`
+	Enabled  bool   `gorm:"comment:Is Enabled" json:"enabled"`
+	Penabled *bool  `gorm:"comment:Is penabled" json:"penabled"`
+	Remark   string `gorm:"size:1024;comment:Remark" json:"remark"`
 }
 
 func (TestTableUser) TableName() string {
@@ -177,7 +174,7 @@ func (TestTableUserNoComments) TableName() string {
 type TestTableUserAddColumn struct {
 	TestTableUser
 
-	AddNewColumn string `gorm:"column:add_new_column;type:varchar(100);comment:Add New Column"`
+	AddNewColumn string `gorm:"type:varchar(100);comment:Add New Column"`
 }
 
 func (TestTableUserAddColumn) TableName() string {
@@ -187,8 +184,8 @@ func (TestTableUserAddColumn) TableName() string {
 type TestTableUserMigrateColumn struct {
 	TestTableUser
 
-	AddNewColumn       string `gorm:"column:add_new_column;type:varchar(100);comment:Test Add New Column"`
-	CommentSingleQuote string `gorm:"column:comment_single_quote;comment:Comments with single quote'[']'"`
+	AddNewColumn       string `gorm:"type:varchar(100);comment:Test Add New Column"`
+	CommentSingleQuote string `gorm:"comment:Comments with single quote'[']'"`
 }
 
 func (TestTableUserMigrateColumn) TableName() string {
@@ -307,7 +304,7 @@ func TestMigrator_FieldNameIsReservedWord(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			db := tt.args.db
-			if err := db.AutoMigrate(tt.args.model); err != nil {
+			if err = db.AutoMigrate(tt.args.model); err != nil {
 				t.Errorf("AutoMigrate failed：%v", err)
 			}
 			if tt.args.drop {
