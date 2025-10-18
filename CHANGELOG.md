@@ -1,3 +1,12 @@
+## [0.2.4](https://github.com/cmmoran/gorm-oracle/compare/v0.2.3...v0.2.4) (2025-10-18)
+
+
+### Bug Fixes
+
+* streamline Oracle dialect and enhance naming strategy ([c732b22](https://github.com/cmmoran/gorm-oracle/commit/c732b2273d0fadcee07be0f38902fbeeb5c591bc))
+
+
+
 ## [0.2.3](https://github.com/cmmoran/gorm-oracle/compare/v0.2.2...v0.2.3) (2025-10-11)
 
 
@@ -32,15 +41,6 @@
 ### Bug Fixes
 
 * improve Oracle `RETURNING` clause handling and update type mappings ([2d4bd19](https://github.com/cmmoran/gorm-oracle/commit/2d4bd19f28d15b1694d00c503768c852a597c953))
-
-
-
-## [0.1.1](https://github.com/cmmoran/gorm-oracle/compare/v0.1.0...v0.1.1) (2025-07-03)
-
-
-### Bug Fixes
-
-* support `timestamp without time zone` -> `timestamp(6)` ([2905406](https://github.com/cmmoran/gorm-oracle/commit/2905406c6e4d1b61114c236256cd3f7281fff5a2))
 
 
 
