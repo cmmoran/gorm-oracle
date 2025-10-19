@@ -1,14 +1,13 @@
 package oracle
 
 import (
-	"fmt"
 	"reflect"
-	"strings"
 
-	"github.com/sijms/go-ora/v2"
+	"github.com/cmmoran/go-ora/v2"
 	"gorm.io/gorm"
-	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
+
+	"github.com/cmmoran/gorm-oracle/callbacks"
 )
 
 func Create(db *gorm.DB) {
@@ -88,107 +87,6 @@ func Create(db *gorm.DB) {
 	}
 }
 
-func outputInserted(db *gorm.DB) {
-	stmt := db.Statement
-	stmtSchema := db.Statement.Schema
-	if stmtSchema == nil {
-		return
-	}
-	lenDefaultValue := len(stmtSchema.FieldsWithDefaultDBValue)
-	if lenDefaultValue == 0 {
-		return
-	}
-	columns := make([]clause.Column, lenDefaultValue)
-	for idx, field := range stmtSchema.FieldsWithDefaultDBValue {
-		columns[idx] = clause.Column{Name: field.DBName}
-	}
-	_, _ = stmt.WriteString("/*- -*/ ")
-	_, _ = stmt.WriteString("RETURNING ")
-	for idx, f := range stmtSchema.FieldsWithDefaultDBValue {
-		if idx > 0 {
-			_ = stmt.WriteByte(',')
-		}
-		stmt.WriteQuoted(f.DBName)
-	}
-	_, _ = stmt.WriteString(" INTO ")
-
-	for idx, field := range stmtSchema.FieldsWithDefaultDBValue {
-		if idx > 0 {
-			_ = stmt.WriteByte(',')
-		}
-
-		outVar := go_ora.Out{Dest: reflect.New(field.FieldType).Interface()}
-		if field.Size > 0 {
-			outVar.Size = field.Size
-		}
-		stmt.AddVar(stmt, outVar)
-		_, _ = stmt.WriteString(fmt.Sprintf(" /*-go_ora.Out{Dest:%s}-*/", field.Name))
-	}
-}
-
-// asRaw16 returns a 16-byte slice if v is any T or *T whose underlying type is [16]byte,
-// or a []byte of length 16, or a UUID string in canonical form.
-func asRaw16(v reflect.Value) ([]byte, bool) {
-	// Fully unwrap interface and pointer layers
-	for v.IsValid() && (v.Kind() == reflect.Interface || v.Kind() == reflect.Ptr) {
-		if v.IsNil() {
-			return nil, true // NULL
-		}
-		v = v.Elem()
-	}
-
-	// [16]byte or named type with underlying [16]byte
-	if v.IsValid() && v.Kind() == reflect.Array && v.Len() == 16 && v.Type().Elem().Kind() == reflect.Uint8 {
-		b := make([]byte, 16)
-		for i := 0; i < 16; i++ {
-			b[i] = byte(v.Index(i).Uint())
-		}
-		return b, true
-	}
-
-	// UUID-ish string (with or without '-')
-	if v.IsValid() && v.Kind() == reflect.String {
-		s := v.String()
-		// Remove hyphens if present
-		if strings.ContainsRune(s, '-') {
-			buf := make([]byte, 0, 32)
-			for i := 0; i < len(s); i++ {
-				if s[i] != '-' {
-					buf = append(buf, s[i])
-				}
-			}
-			s = string(buf)
-		}
-
-		if len(s) == 32 {
-			out := make([]byte, 16)
-			for i := 0; i < 16; i++ {
-				h1, ok1 := fromHex(s[i*2])
-				h2, ok2 := fromHex(s[i*2+1])
-				if !ok1 || !ok2 {
-					goto notuuid
-				}
-				out[i] = (h1 << 4) | h2
-			}
-			return out, true
-		}
-	}
-notuuid:
-	return nil, false
-}
-
-func fromHex(r byte) (byte, bool) {
-	switch {
-	case '0' <= r && r <= '9':
-		return r - '0', true
-	case 'a' <= r && r <= 'f':
-		return r - 'a' + 10, true
-	case 'A' <= r && r <= 'F':
-		return r - 'A' + 10, true
-	}
-	return 0, false
-}
-
 func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values) {
 	dummyTable := getDummyTable(db)
 
@@ -196,6 +94,11 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 	db.Statement.WriteQuoted(db.Statement.Table)
 	_, _ = db.Statement.WriteString(" USING (")
 
+	fcache := make(map[string]struct {
+		dataType  string
+		precision int
+		notnull   bool
+	})
 	for idx, value := range values.Values {
 		if idx > 0 {
 			_, _ = db.Statement.WriteString(" UNION ALL ")
@@ -212,11 +115,22 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 				precision int
 				notnull   bool
 			)
-			if db.Statement.Schema != nil {
-				if f := db.Statement.Schema.LookUpField(column.Name); f != nil {
-					dataType = db.Statement.DataTypeOf(f)
-					precision = f.Precision
-					notnull = f.NotNull
+			if fc, ok := fcache[column.Name]; ok {
+				dataType = fc.dataType
+				precision = fc.precision
+				notnull = fc.notnull
+			} else {
+				if db.Statement.Schema != nil {
+					if f := db.Statement.Schema.LookUpField(column.Name); f != nil {
+						dataType = db.Statement.DataTypeOf(f)
+						precision = f.Precision
+						notnull = f.NotNull
+						fcache[column.Name] = struct {
+							dataType  string
+							precision int
+							notnull   bool
+						}{dataType, precision, notnull}
+					}
 				}
 			}
 			db.Statement.AddVar(db.Statement, convertValue(v, dataType, precision, notnull))
@@ -249,11 +163,22 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 				precision int
 				notnull   bool
 			)
-			if db.Statement.Schema != nil {
-				if f := db.Statement.Schema.LookUpField(onConflict.DoUpdates[idx].Column.Name); f != nil {
-					dataType = db.Statement.DataTypeOf(f)
-					precision = f.Precision
-					notnull = f.NotNull
+			if fc, ok := fcache[onConflict.DoUpdates[idx].Column.Name]; ok {
+				dataType = fc.dataType
+				precision = fc.precision
+				notnull = fc.notnull
+			} else {
+				if db.Statement.Schema != nil {
+					if f := db.Statement.Schema.LookUpField(onConflict.DoUpdates[idx].Column.Name); f != nil {
+						dataType = db.Statement.DataTypeOf(f)
+						precision = f.Precision
+						notnull = f.NotNull
+						fcache[onConflict.DoUpdates[idx].Column.Name] = struct {
+							dataType  string
+							precision int
+							notnull   bool
+						}{dataType, precision, notnull}
+					}
 				}
 			}
 			onConflict.DoUpdates[idx].Value = convertValue(onConflict.DoUpdates[idx].Value, dataType, precision, notnull)

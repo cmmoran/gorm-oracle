@@ -1,6 +1,6 @@
 package oracle
 
-import "github.com/sijms/go-ora/v2"
+import "github.com/cmmoran/go-ora/v2"
 
 type (
 	RefCursor struct {

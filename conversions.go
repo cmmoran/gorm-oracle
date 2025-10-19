@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sijms/go-ora/v2"
+	"github.com/cmmoran/go-ora/v2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -144,4 +144,67 @@ func trimFracTo(t time.Time, p int) time.Time {
 	rounded := (nanos + scale/2) / scale * scale
 	return time.Date(t.Year(), t.Month(), t.Day(),
 		t.Hour(), t.Minute(), t.Second(), rounded, t.Location())
+}
+
+// asRaw16 returns a 16-byte slice if v is any T or *T whose underlying type is [16]byte,
+// or a []byte of length 16, or a UUID string in canonical form.
+func asRaw16(v reflect.Value) ([]byte, bool) {
+	// Fully unwrap interface and pointer layers
+	for v.IsValid() && (v.Kind() == reflect.Interface || v.Kind() == reflect.Ptr) {
+		if v.IsNil() {
+			return nil, true // NULL
+		}
+		v = v.Elem()
+	}
+
+	// [16]byte or named type with underlying [16]byte
+	if v.IsValid() && v.Kind() == reflect.Array && v.Len() == 16 && v.Type().Elem().Kind() == reflect.Uint8 {
+		b := make([]byte, 16)
+		for i := 0; i < 16; i++ {
+			b[i] = byte(v.Index(i).Uint())
+		}
+		return b, true
+	}
+
+	// UUID-ish string (with or without '-')
+	if v.IsValid() && v.Kind() == reflect.String {
+		s := v.String()
+		// Remove hyphens if present
+		if strings.ContainsRune(s, '-') {
+			buf := make([]byte, 0, 32)
+			for i := 0; i < len(s); i++ {
+				if s[i] != '-' {
+					buf = append(buf, s[i])
+				}
+			}
+			s = string(buf)
+		}
+
+		if len(s) == 32 {
+			out := make([]byte, 16)
+			for i := 0; i < 16; i++ {
+				h1, ok1 := fromHex(s[i*2])
+				h2, ok2 := fromHex(s[i*2+1])
+				if !ok1 || !ok2 {
+					goto notuuid
+				}
+				out[i] = (h1 << 4) | h2
+			}
+			return out, true
+		}
+	}
+notuuid:
+	return nil, false
+}
+
+func fromHex(r byte) (byte, bool) {
+	switch {
+	case '0' <= r && r <= '9':
+		return r - '0', true
+	case 'a' <= r && r <= 'f':
+		return r - 'a' + 10, true
+	case 'A' <= r && r <= 'F':
+		return r - 'A' + 10, true
+	}
+	return 0, false
 }

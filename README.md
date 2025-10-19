@@ -127,22 +127,3 @@ Recommended configuration:
 ```
 
 </details>
-
-<details>
-<summary>UUID / ULID / [16]byte type-alias support</summary>
-
-> How do I get `UUID` support?
-
-Unfortunately, sijms/go-ora does not support `UUID` as a _first-class citizen`. However, in your go.mod file add this:
-
-```go
-replace github.com/sijms/go-ora/v2 => github.com/cmmoran/go-ora/v2 v2.0.0-20250926150009-a7656b5212f0
-
-```
-
-I've added first-class support for _uuid-as-string_ and any other `[16]byte` type-alias within go-ora. At this time
-
-I have not yet opened a PR to merge these changes into the original repo.
-
-I have added this change to the `gorm-oracle` go.mod file but this will only work for you if you also add it.
-</details>

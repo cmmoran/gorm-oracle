@@ -1,10 +1,9 @@
 module github.com/cmmoran/gorm-oracle
 
-go 1.24.7
-
-replace github.com/sijms/go-ora/v2 => github.com/cmmoran/go-ora/v2 v2.0.0-20250926150009-a7656b5212f0
+go 1.24.0
 
 require (
+	github.com/cmmoran/go-ora/v2 v2.9.2
 	github.com/docker/go-connections v0.6.0
 	github.com/emirpasic/gods/v2 v2.0.0-alpha
 	github.com/gofrs/uuid/v3 v3.1.2
@@ -13,10 +12,9 @@ require (
 	github.com/iancoleman/strcase v0.3.0
 	github.com/jinzhu/inflection v1.0.0
 	github.com/oklog/ulid/v2 v2.1.1
-	github.com/sijms/go-ora/v2 v2.9.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.39.0
-	golang.org/x/exp v0.0.0-20251009144603-d2f985daa21b
+	golang.org/x/exp v0.0.0-20251017212417-90e834f514db
 	gorm.io/gorm v1.31.0
 )
 
@@ -70,14 +68,9 @@ require (
 	go.opentelemetry.io/otel/sdk v1.38.0 // indirect
 	go.opentelemetry.io/otel/trace v1.38.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.8.0 // indirect
-	golang.org/x/crypto v0.37.0 // indirect
-	golang.org/x/sys v0.36.0 // indirect
-	golang.org/x/text v0.28.0 // indirect
+	golang.org/x/crypto v0.43.0 // indirect
+	golang.org/x/sys v0.37.0 // indirect
+	golang.org/x/text v0.30.0 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-)
-
-exclude (
-	github.com/sijms/go-ora/v2 v2.8.8 // ORA-03137: [opiexe: protocol violation]
-	github.com/sijms/go-ora/v2 v2.8.9 // buggy
 )

@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode"
 
-	go_ora "github.com/sijms/go-ora/v2"
+	go_ora "github.com/cmmoran/go-ora/v2"
 
 	"gorm.io/gorm/utils"
 )

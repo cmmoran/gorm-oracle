@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/sijms/go-ora/v2"
+	"github.com/cmmoran/go-ora/v2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/schema"
