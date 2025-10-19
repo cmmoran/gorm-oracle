@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	oracle "github.com/godoes/gorm-oracle"
 	"github.com/sijms/go-ora/v2"
 	"golang.org/x/exp/slices"
 	"gorm.io/gorm"
@@ -255,7 +254,7 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 	}
 	d.sessionLocation = loc
 	if sqlDB, ok := db.ConnPool.(*sql.DB); ok {
-		_, _ = oracle.AddSessionParams(sqlDB, map[string]string{
+		_, _ = AddSessionParams(sqlDB, map[string]string{
 			"TIME_ZONE":               loc.String(),
 			"NLS_DATE_FORMAT":         `YYYY-MM-DD"T"HH24:MI:SS`,
 			"NLS_TIMESTAMP_FORMAT":    `YYYY-MM-DD"T"HH24:MI:SS.FF6`,
