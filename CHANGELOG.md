@@ -1,3 +1,12 @@
+# [0.3.0](https://github.com/cmmoran/gorm-oracle/compare/v0.2.5...v0.3.0) (2025-10-19)
+
+
+### Features
+
+* changed dependency sijms/go-ora to cmmoran/go-ora because it is cumbersome to require go mod replace entries across many dependent projects. ([ac4881d](https://github.com/cmmoran/gorm-oracle/commit/ac4881d4ca59596ec9f64f83efc1a5fef18cca40))
+
+
+
 ## [0.2.5](https://github.com/cmmoran/gorm-oracle/compare/v0.2.4...v0.2.5) (2025-10-19)
 
 
@@ -31,16 +40,6 @@
 ### Bug Fixes
 
 * reworked identifier case handling. also added build and release actions. ([348fcde](https://github.com/cmmoran/gorm-oracle/commit/348fcdef5bfcc74cfbfbea49296cc9e8376448ca))
-
-
-
-## [0.2.1](https://github.com/cmmoran/gorm-oracle/compare/v0.2.0...v0.2.1) (2025-09-26)
-
-
-### Bug Fixes
-
-* enhance Oracle dialect with improved `RETURNING` handling and test coverage ([d13d98b](https://github.com/cmmoran/gorm-oracle/commit/d13d98b0f84f7520b32b83c5d1b1476e2c42a174))
-* **partial-indexes:** cleaned up partial-index creation ensuring the index name follows the naming strategy ([6f9f3b7](https://github.com/cmmoran/gorm-oracle/commit/6f9f3b7a4393f9c9f0964eed35a9f1405f889a24))
 
 
 
