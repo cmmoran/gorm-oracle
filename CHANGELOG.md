@@ -1,3 +1,12 @@
+## [0.3.1](https://github.com/cmmoran/gorm-oracle/compare/v0.3.0...v0.3.1) (2025-10-28)
+
+
+### Bug Fixes
+
+* fixed an issue where returning could include non-returnable fields ([073e32e](https://github.com/cmmoran/gorm-oracle/commit/073e32e297e25a6e573f468d8cb6a11b2137945e))
+
+
+
 # [0.3.0](https://github.com/cmmoran/gorm-oracle/compare/v0.2.5...v0.3.0) (2025-10-19)
 
 
@@ -31,15 +40,6 @@
 ### Bug Fixes
 
 * quoted table and column values shoudl now properly work within index, unique, foreign key, and constraints ([54699d3](https://github.com/cmmoran/gorm-oracle/commit/54699d30a310bd71671af0e6ec8b2c527c53e7a8))
-
-
-
-## [0.2.2](https://github.com/cmmoran/gorm-oracle/compare/v0.2.1...v0.2.2) (2025-10-11)
-
-
-### Bug Fixes
-
-* reworked identifier case handling. also added build and release actions. ([348fcde](https://github.com/cmmoran/gorm-oracle/commit/348fcdef5bfcc74cfbfbea49296cc9e8376448ca))
 
 
 
