@@ -87,7 +87,9 @@ func (returning Returning) Build(builder clause.Builder) {
 		}
 	} else if len(returning.Names) == 0 {
 		for _, f := range returning.fields {
-			returning.Names = append(returning.Names, f.DBName)
+			if isReturnableField(f) {
+				returning.Names = append(returning.Names, f.DBName)
+			}
 		}
 	}
 
@@ -97,6 +99,9 @@ func (returning Returning) Build(builder clause.Builder) {
 
 	// Build RETURNING clause
 	for i, f := range returning.fields {
+		if !isReturnableField(f) {
+			continue
+		}
 		if i > 0 {
 			_ = builder.WriteByte(',')
 		}
@@ -118,6 +123,9 @@ func (returning Returning) Build(builder clause.Builder) {
 	isSlice := rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array
 
 	for i, f := range returning.fields {
+		if !isReturnableField(f) {
+			continue
+		}
 		if i > 0 {
 			_, _ = builder.WriteString(", ")
 		}
