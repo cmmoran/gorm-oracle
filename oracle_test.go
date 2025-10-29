@@ -224,7 +224,7 @@ func setupOracleDatabase(t require.TestingT, ctx context.Context, ignoreCase, na
 		err    error
 	)
 
-	timeGranularity := -time.Microsecond
+	timeGranularity := time.Nanosecond
 	//timeGranularity := time.Duration(0)
 	if tgStr, ok := os.LookupEnv("GORM_ORA_TIME_GRANULARITY"); ok {
 		timeGranularity, err = time.ParseDuration(tgStr)
@@ -244,7 +244,7 @@ func setupOracleDatabase(t require.TestingT, ctx context.Context, ignoreCase, na
 		TimeGranularity:         timeGranularity,
 		SessionTimezone:         sessionTimezone.String(),
 	}), &gorm.Config{
-		NamingStrategy: schema.NamingStrategy{},
+		NamingStrategy: &NamingStrategy{},
 		Logger:         l,
 		NowFunc: func() time.Time {
 			tt := time.Now()
@@ -289,7 +289,7 @@ func getTestGormConfig(logWriter logger.Interface) *gorm.Config {
 type TestTableTime struct {
 	ID   uint64    `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
 	Name *string   `gorm:"column:name;size:50;comment:User Name" json:"name"`
-	Time time.Time `gorm:"type:timestamp with time zone;comment:User Time" json:"time"`
+	Time time.Time `gorm:"type:timestamp(9) with time zone;comment:User Time" json:"time"`
 }
 
 func (TestTableTime) TableName() string {

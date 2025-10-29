@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/cmmoran/go-ora/v2"
-	"golang.org/x/exp/slices"
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
@@ -253,14 +252,21 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 		loc = time.Local
 	}
 	d.sessionLocation = loc
+	gran := d.TimeGranularity
+	if gran < 0 {
+		gran = -gran
+	} else if gran == 0 {
+		gran = time.Nanosecond
+	}
 	if sqlDB, ok := db.ConnPool.(*sql.DB); ok {
+		ff := formatFractionalPart(gran)
 		_, _ = AddSessionParams(sqlDB, map[string]string{
 			"TIME_ZONE":               loc.String(),
-			"NLS_DATE_FORMAT":         `YYYY-MM-DD"T"HH24:MI:SS`,
-			"NLS_TIMESTAMP_FORMAT":    `YYYY-MM-DD"T"HH24:MI:SS.FF6`,
-			"NLS_TIMESTAMP_TZ_FORMAT": `YYYY-MM-DD"T"HH24:MI:SS.FF6TZH:TZM`,
-			"NLS_TIME_FORMAT":         `HH24:MI:SS.FF6`,
-			"NLS_TIME_TZ_FORMAT":      `HH24:MI:SS.FF6TZH:TZM`,
+			"NLS_DATE_FORMAT":         `YYYY-MM-DD HH24:MI:SS`,
+			"NLS_TIMESTAMP_FORMAT":    fmt.Sprintf(`YYYY-MM-DD HH24:MI:SS%s"Z"`, ff),
+			"NLS_TIMESTAMP_TZ_FORMAT": fmt.Sprintf(`YYYY-MM-DD HH24:MI:SS%sTZH:TZM`, ff),
+			"NLS_TIME_FORMAT":         fmt.Sprintf(`HH24:MI:SS%s`, ff),
+			"NLS_TIME_TZ_FORMAT":      fmt.Sprintf(`HH24:MI:SS%sTZH:TZM`, ff),
 		})
 	}
 
@@ -274,9 +280,7 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 	dbverSplits := strings.Split(d.DBVer, ".")
 	if dbVer, _ := strconv.Atoi(dbverSplits[0]); dbVer == 12 {
 		if dbMinor, _ := strconv.Atoi(dbverSplits[1]); dbMinor >= 2 {
-			if d.namingStrategy.IdentifierMaxLength == 0 {
-				d.namingStrategy.capIdentifierMaxLength = 128
-			}
+			d.namingStrategy.capIdentifierMaxLength = 128
 		}
 	} else if dbVer > 12 {
 		d.namingStrategy.capIdentifierMaxLength = 128
@@ -297,24 +301,19 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 	return
 }
 
-func (d Dialector) stableDbNameFields(m *schema.Schema, cols []clause.Column) []*schema.Field {
-	if m == nil {
-		return nil
-	}
-	ordered := make([]*schema.Field, 0, len(m.Fields))
-	for _, f := range m.Fields {
-		if !isReturnableField(f) || !f.Readable {
-			continue
+func formatFractionalPart(granularity time.Duration) string {
+	switch {
+	case granularity >= time.Second:
+		return ""
+	default:
+		digits := 0
+		v := int64(time.Second / granularity)
+		for v > 1 && digits < 9 {
+			v /= 10
+			digits++
 		}
-		if fld := m.LookUpField(f.Name); fld != nil {
-			if len(cols) == 0 || !slices.ContainsFunc(cols, func(c clause.Column) bool {
-				return c.Name == fld.DBName
-			}) {
-				ordered = append(ordered, fld)
-			}
-		}
+		return fmt.Sprintf(".FF%d", digits)
 	}
-	return ordered
 }
 
 func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuilder) {
@@ -604,7 +603,7 @@ func (d Dialector) DataTypeOf(field *schema.Field) string {
 				sqlType = "VARCHAR2(4000)"
 			}
 		}
-	case schema.Time:
+	case schema.Time, "timestamp with time zone":
 		sqlType = "TIMESTAMP WITH TIME ZONE"
 	case schema.Bytes:
 		sqlType = "BLOB"
@@ -659,30 +658,4 @@ func (d Dialector) Translate(err error) error {
 		return terr
 	}
 	return err
-}
-
-func toBytesFrom16Array(val interface{}) ([]byte, error) {
-	rv := reflect.ValueOf(val)
-	for rv.Kind() == reflect.Ptr {
-		rv = rv.Elem()
-	}
-	rt := rv.Type()
-
-	// check it’s an Array of length 16
-	if rt.Kind() != reflect.Array || rt.Len() != 16 {
-		return nil, fmt.Errorf("expected array[16], got %s", rt)
-	}
-	// check element kind is uint8
-	if rt.Elem().Kind() != reflect.Uint8 {
-		return nil, fmt.Errorf("expected element kind uint8, got %s", rt.Elem())
-	}
-
-	// build a new slice and copy each element
-	out := make([]byte, 16)
-	for i := 0; i < 16; i++ {
-		// rv.Index(i) gives a reflect.Value of the element
-		// .Uint() returns its numeric (0–255) value
-		out[i] = byte(rv.Index(i).Uint())
-	}
-	return out, nil
 }
