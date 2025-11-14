@@ -470,42 +470,44 @@ func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuil
 		}
 	}
 	clauseBuilders["WHERE"] = func(c clause.Clause, builder clause.Builder) {
-		for i, ws := range c.Expression.(clause.Where).Exprs {
-			stmt, _ := builder.(*gorm.Statement)
-			switch wst := ws.(type) {
-			case clause.Eq:
-				name := ""
-				if ccol, cok := wst.Column.(clause.Column); cok {
-					name = ccol.Name
-				} else if scol, sok := wst.Column.(string); sok {
-					name = scol
-				}
+		stmt, _ := builder.(*gorm.Statement)
+		if stmt.Schema != nil {
+			for i, ws := range c.Expression.(clause.Where).Exprs {
+				switch wst := ws.(type) {
+				case clause.Eq:
+					name := ""
+					if ccol, cok := wst.Column.(clause.Column); cok {
+						name = ccol.Name
+					} else if scol, sok := wst.Column.(string); sok {
+						name = scol
+					}
 
-				if f := stmt.Schema.LookUpField(name); f != nil {
-					c.Expression.(clause.Where).Exprs[i] = clause.Eq{
-						Column: clause.Column{Table: stmt.Table, Name: f.DBName},
-						Value:  convertToLiteral(stmt, wst.Value, stmt.ReflectValue, f),
+					if f := stmt.Schema.LookUpField(name); f != nil {
+						c.Expression.(clause.Where).Exprs[i] = clause.Eq{
+							Column: clause.Column{Table: stmt.Table, Name: f.DBName},
+							Value:  convertToLiteral(stmt, wst.Value, stmt.ReflectValue, f),
+						}
+						stmt.Clauses["WHERE"] = c
 					}
-					stmt.Clauses["WHERE"] = c
-				}
-				fmt.Printf("WHERE EQ: %d %v [%v %v]\n", i, ws, wst.Column, wst.Value)
-			case clause.Expr:
-				if strings.Contains(wst.SQL, "=") {
-					sp := strings.Split(wst.SQL, "=")
-					k := sp[0]
-					if name, ok := IsExplicitQuoted(k); ok {
-						k = name
-					}
-					if f := stmt.Schema.LookUpField(k); f != nil {
-						wst.Vars[0] = convertToLiteral(stmt, wst.Vars[0], stmt.ReflectValue, f)
-						c.Expression.(clause.Where).Exprs[i] = clause.Expr{
-							SQL:                wst.SQL,
-							Vars:               wst.Vars,
-							WithoutParentheses: wst.WithoutParentheses,
+					fmt.Printf("WHERE EQ: %d %v [%v %v]\n", i, ws, wst.Column, wst.Value)
+				case clause.Expr:
+					if strings.Contains(wst.SQL, "=") {
+						sp := strings.Split(wst.SQL, "=")
+						k := sp[0]
+						if name, ok := IsExplicitQuoted(k); ok {
+							k = name
+						}
+						if f := stmt.Schema.LookUpField(k); f != nil {
+							wst.Vars[0] = convertToLiteral(stmt, wst.Vars[0], stmt.ReflectValue, f)
+							c.Expression.(clause.Where).Exprs[i] = clause.Expr{
+								SQL:                wst.SQL,
+								Vars:               wst.Vars,
+								WithoutParentheses: wst.WithoutParentheses,
+							}
 						}
 					}
+					fmt.Printf("WHERE EXPR: %d %v [%v %v]\n", i, ws, wst.SQL, wst.Vars)
 				}
-				fmt.Printf("WHERE EXPR: %d %v [%v %v]\n", i, ws, wst.SQL, wst.Vars)
 			}
 		}
 		c.Build(builder)
