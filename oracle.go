@@ -489,7 +489,6 @@ func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuil
 						}
 						stmt.Clauses["WHERE"] = c
 					}
-					fmt.Printf("WHERE EQ: %d %v [%v %v]\n", i, ws, wst.Column, wst.Value)
 				case clause.Expr:
 					if strings.Contains(wst.SQL, "=") {
 						sp := strings.Split(wst.SQL, "=")
@@ -506,7 +505,6 @@ func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuil
 							}
 						}
 					}
-					fmt.Printf("WHERE EXPR: %d %v [%v %v]\n", i, ws, wst.SQL, wst.Vars)
 				}
 			}
 		}
