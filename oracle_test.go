@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cmmoran/go-ora/v2/converters"
 	"github.com/docker/go-connections/nat"
 	gofrs "github.com/gofrs/uuid/v3"
 	"github.com/google/uuid"
@@ -235,6 +236,13 @@ func setupOracleDatabase(t require.TestingT, ctx context.Context, ignoreCase, na
 		sessionTimezone, err = time.LoadLocation(sessionTimezoneStr)
 		require.NoError(t, err, "Failed to parse GORM_ORA_TZ")
 	}
+	if traceEnabled, ok := os.LookupEnv("GORM_ORA_TRACE"); ok {
+		if len(dsn) > 0 && strings.Contains(dsn, "?") {
+			dsn = fmt.Sprintf("%s&TRACE%%20FILE=%s", dsn, traceEnabled)
+		} else if len(dsn) > 0 {
+			dsn = fmt.Sprintf("%s?TRACE%%20FILE=%s", dsn, traceEnabled)
+		}
+	}
 	db, err = gorm.Open(New(Config{
 		DSN:                     dsn,
 		VarcharSizeIsCharLength: true,
@@ -249,9 +257,9 @@ func setupOracleDatabase(t require.TestingT, ctx context.Context, ignoreCase, na
 		NowFunc: func() time.Time {
 			tt := time.Now()
 			if timeGranularity < 0 {
-				tt = tt.Truncate(-timeGranularity)
+				tt = tt.Round(-timeGranularity)
 			} else if timeGranularity > 0 {
-				tt = tt.Round(timeGranularity)
+				tt = tt.Truncate(timeGranularity)
 			}
 			if sessionTimezone != time.Local {
 				tt = tt.In(sessionTimezone)
@@ -287,18 +295,34 @@ func getTestGormConfig(logWriter logger.Interface) *gorm.Config {
 }
 
 type TestTableTime struct {
-	ID   uint64    `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
-	Name *string   `gorm:"column:name;size:50;comment:User Name" json:"name"`
-	Time time.Time `gorm:"type:timestamp(9) with time zone;comment:User Time" json:"time"`
+	ID           uint64    `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
+	Name         *string   `gorm:"size:50;comment:User Name" json:"name"`
+	Date         time.Time `gorm:"type:date;comment:Date" json:"date"`
+	Timestamp    time.Time `gorm:"type:timestamp;comment:Timestamp" json:"timestamp"`
+	TimestampTZ  time.Time `gorm:"type:timestamp with time zone;comment:TSTZ" json:"timestamp_tz"`
+	TimestampLTZ time.Time `gorm:"type:timestamp with local time zone;comment:TSLTZ" json:"timestamp_ltz"`
 }
 
 func (TestTableTime) TableName() string {
 	return "test_user_time"
 }
 
+type TestTableTimePtrs struct {
+	ID           uint64     `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
+	Name         *string    `gorm:"size:50;comment:User Name" json:"name"`
+	Date         *time.Time `gorm:"type:date;comment:Date" json:"date"`
+	Timestamp    *time.Time `gorm:"type:timestamp;comment:Timestamp" json:"timestamp"`
+	TimestampTZ  *time.Time `gorm:"type:timestamp with time zone;comment:TSTZ" json:"timestamp_tz"`
+	TimestampLTZ *time.Time `gorm:"type:timestamp with local time zone;comment:TSLTZ" json:"timestamp_ltz"`
+}
+
+func (TestTableTimePtrs) TableName() string {
+	return "test_user_time"
+}
+
 type TestTableUUID struct {
-	ID   uint64    `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
-	Name string    `gorm:"column:name;size:50;comment:User Name" json:"name"`
+	ID   uint64    `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
+	Name string    `gorm:"size:50;comment:User Name" json:"name"`
 	User uuid.UUID `gorm:"type:uuid;comment:User UUID" json:"user"`
 }
 
@@ -307,8 +331,8 @@ func (TestTableUUID) TableName() string {
 }
 
 type TestTableULID struct {
-	ID   uint64    `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
-	Name string    `gorm:"column:name;size:50;comment:User Name" json:"name"`
+	ID   uint64    `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
+	Name string    `gorm:"size:50;comment:User Name" json:"name"`
 	User ulid.ULID `gorm:"type:ulid;comment:User ULID" json:"user"`
 }
 
@@ -327,8 +351,8 @@ func (TestTableGUUID) TableName() string {
 }
 
 type TestTableGofrsUUID struct {
-	ID   uint64     `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
-	Name string     `gorm:"column:name;size:50;comment:User Name" json:"name"`
+	ID   uint64     `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
+	Name string     `gorm:"size:50;comment:User Name" json:"name"`
 	User gofrs.UUID `gorm:"comment:User UUID" json:"user"`
 }
 
@@ -418,8 +442,10 @@ func TestGUUIDType(t *testing.T) {
 	require.EqualValuesf(t, test00.User, test3.User, "expecting User to match")
 
 	test4 := &TestTableGUUID{}
-	result = db.Raw(`SELECT * FROM test_user_uuid WHERE user = ?`, test00.User).Scan(test4)
+	result = db.Raw(`SELECT * FROM test_user_uuid WHERE "USER" = ?`, test00.User).Scan(test4)
 	require.NoError(t, result.Error, "expecting no error")
+	require.Equal(t, result.RowsAffected, int64(1))
+	require.EqualValuesf(t, test00, test4, "expecting User to match")
 }
 
 func TestGofrsUUIDType(t *testing.T) {
@@ -533,31 +559,152 @@ func TestTimeTypes(t *testing.T) {
 	err := db.Migrator().AutoMigrate(TestTableTime{})
 	require.NoError(t, err, "expecting no error")
 
+	nowTime := db.NowFunc().UTC()
+	nowPrimeTime := db.NowFunc().UTC()
+	loc := db.Dialector.(*Dialector).sessionLocation
+	if loc == nil {
+		loc = time.Local
+	}
 	test0Name := "test0"
 	test00Name := "test00"
 	test0 := &TestTableTime{
-		Name: &test0Name,
-		Time: db.NowFunc(),
+		ID:           0,
+		Name:         &test0Name,
+		Date:         nowTime,
+		Timestamp:    nowTime,
+		TimestampTZ:  nowTime,
+		TimestampLTZ: nowTime,
 	}
 	test00 := &TestTableTime{
-		Name: &test00Name,
-		Time: db.NowFunc(),
+		Name:         &test00Name,
+		Date:         nowPrimeTime,
+		Timestamp:    nowPrimeTime,
+		TimestampTZ:  nowPrimeTime,
+		TimestampLTZ: nowPrimeTime,
 	}
 	result := db.Create([]*TestTableTime{test0, test00})
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValuesf(t, result.RowsAffected, int64(2), "expecting two records created")
 	require.EqualValuesf(t, test0.ID, int64(1), "expecting ID to be 1")
-	test0Time := test0.Time
+	test0Date := test0.Date
+	test0Timestamp := converters.ToTimestamp(test0.Timestamp)
+	test0TimestampTZ := test0.TimestampTZ
+	test0TimestampLTZ := test0.TimestampLTZ
+	id := test0.ID
+	test0 = &TestTableTime{
+		ID: id,
+	}
 	result = db.First(test0)
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValuesf(t, test0.ID, int64(1), "expecting ID to be 1")
-	require.EqualValuesf(t, test0Time, test0.Time, "expecting Time to match")
+	require.EqualValuesf(t, test0Date, test0.Date, "expecting Date to match")
+	require.EqualValuesf(t, test0Timestamp, test0.Timestamp, "expecting Timestamp to match")
+	require.EqualValuesf(t, test0TimestampTZ, test0.TimestampTZ, "expecting TimestampTZ to match")
+	require.EqualValuesf(t, test0TimestampLTZ, test0.TimestampLTZ, "expecting TimestampLTZ to match")
 
 	test1 := &TestTableTime{}
-	result = db.Model(test1).Where(`time = ?`, test0Time).Scan(test1)
+	result = db.Model(test1).Where(`date`, test0Date).First(test1)
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
-	require.EqualValuesf(t, test0Time, test1.Time, "expecting Time to match")
+	require.EqualValuesf(t, test0Date, test1.Date, "expecting Time to match")
+
+	test1 = &TestTableTime{}
+	result = db.Model(test1).Where(`timestamp`, test0Timestamp).First(test1)
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
+	require.EqualValuesf(t, test0Timestamp, test1.Timestamp, "expecting Date to match")
+
+	test1 = &TestTableTime{}
+	result = db.Model(test1).Where(`timestamp_tz`, test0TimestampTZ).First(test1)
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
+	require.EqualValuesf(t, test0TimestampTZ, test1.TimestampTZ, "expecting Date to match")
+
+	test1 = &TestTableTime{}
+	result = db.Model(test1).Where(`timestamp_ltz`, test0TimestampLTZ).First(test1)
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
+	require.EqualValuesf(t, test0TimestampLTZ, test1.TimestampLTZ, "expecting Date to match")
+}
+
+func TestTimePtrTypes(t *testing.T) {
+	ctx := currentContext()
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+	db = db.WithContext(ctx)
+	_ = db.Migrator().DropTable(&TestTableTimePtrs{})
+	err := db.Migrator().AutoMigrate(TestTableTimePtrs{})
+	require.NoError(t, err, "expecting no error")
+
+	nowTime := ptr(db.NowFunc())
+	nowPrimeTime := ptr(db.NowFunc())
+	loc := db.Dialector.(*Dialector).sessionLocation
+	if loc == nil {
+		loc = time.Local
+	}
+	test0Name := "test0"
+	test00Name := "test00"
+	test0 := &TestTableTimePtrs{
+		ID:           0,
+		Name:         &test0Name,
+		Date:         nowTime,
+		Timestamp:    nowTime,
+		TimestampTZ:  nowTime,
+		TimestampLTZ: nowTime,
+	}
+	test00 := &TestTableTimePtrs{
+		Name:         &test00Name,
+		Date:         nowPrimeTime,
+		Timestamp:    nowPrimeTime,
+		TimestampTZ:  nowPrimeTime,
+		TimestampLTZ: nowPrimeTime,
+	}
+	result := db.Create([]*TestTableTimePtrs{test0, test00})
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValuesf(t, result.RowsAffected, int64(2), "expecting two records created")
+	require.EqualValuesf(t, test0.ID, int64(1), "expecting ID to be 1")
+	test0Date := test0.Date
+	test0Timestamp := test0.Timestamp
+	test0TimestampTZ := test0.TimestampTZ
+	test0TimestampLTZ := test0.TimestampLTZ
+	id := test0.ID
+	test0 = &TestTableTimePtrs{
+		ID: id,
+	}
+	result = db.First(test0)
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValuesf(t, test0.ID, int64(1), "expecting ID to be 1")
+	require.EqualValuesf(t, test0Date, test0.Date, "expecting Date to match")
+	require.EqualValuesf(t, test0Timestamp, test0.Timestamp, "expecting Timestamp to match")
+	require.EqualValuesf(t, test0TimestampTZ, test0.TimestampTZ, "expecting TimestampTZ to match")
+	require.EqualValuesf(t, test0TimestampLTZ, test0.TimestampLTZ, "expecting TimestampLTZ to match")
+
+	test1 := &TestTableTimePtrs{}
+	result = db.Model(test1).Where(`date`, test0.Date).First(test1)
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
+	require.EqualValuesf(t, test0Date, test1.Date, "expecting Time to match")
+
+	test1 = &TestTableTimePtrs{}
+	result = db.Model(test1).Where(`timestamp`, test0Timestamp).Find(test1)
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
+	require.EqualValuesf(t, test0Timestamp, test1.Timestamp, "expecting Date to match")
+
+	test1 = &TestTableTimePtrs{}
+	result = db.Model(test1).Where(`timestamp_tz`, test0TimestampTZ).Find(test1)
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
+	require.EqualValuesf(t, test0TimestampTZ, test1.TimestampTZ, "expecting Date to match")
+
+	test1 = &TestTableTimePtrs{}
+	result = db.Model(test1).Where(`timestamp_ltz`, test0TimestampLTZ).Find(test1)
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
+	require.EqualValuesf(t, test0TimestampLTZ, test1.TimestampLTZ, "expecting Date to match")
 }
 
 func TestReturningIntoUUID(t *testing.T) {

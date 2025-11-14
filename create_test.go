@@ -97,18 +97,18 @@ func TestCreateCaseSensitive(t *testing.T) {
 }
 
 type TestTableUserUnique struct {
-	ID          uint64     `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto-increment ID" json:"id"`
-	UID         string     `gorm:"column:uid;type:varchar(50);comment:User identity;unique" json:"uid"`
-	Name        string     `gorm:"column:name;size:50;comment:User name" json:"name"`
-	Account     string     `gorm:"column:account;type:varchar(50);comment:Login account" json:"account"`
-	Password    string     `gorm:"column:password;type:varchar(512);comment:Login password (encrypted)" json:"password"`
-	Email       string     `gorm:"column:email;type:varchar(128);comment:Email address" json:"email"`
-	PhoneNumber string     `gorm:"column:phone_number;type:varchar(15);comment:E.164" json:"phoneNumber"`
-	Sex         string     `gorm:"column:sex;type:char(1);comment:Gender" json:"sex"`
-	Birthday    *time.Time `gorm:"column:birthday;<-:create;comment:Birthday" json:"birthday,omitempty"`
-	UserType    int        `gorm:"column:user_type;size:8;comment:User type" json:"userType"`
-	Enabled     bool       `gorm:"column:enabled;comment:Is enabled" json:"enabled"`
-	Remark      string     `gorm:"column:remark;size:1024;comment:Remarks" json:"remark"`
+	ID          uint64     `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto-increment ID" json:"id"`
+	UID         string     `gorm:"type:varchar2;size:50;comment:User identity;unique" json:"uid"`
+	Name        string     `gorm:"size:50;comment:User name" json:"name"`
+	Account     string     `gorm:"type:varchar2;size:50;comment:Login account" json:"account"`
+	Password    string     `gorm:"type:varchar2;size:512;comment:Login password (encrypted)" json:"password"`
+	Email       string     `gorm:"type:varchar2;size:128;comment:Email address" json:"email"`
+	PhoneNumber string     `gorm:"type:varchar2;size:15;comment:E.164" json:"phoneNumber"`
+	Sex         string     `gorm:"type:char;size:1;comment:Gender" json:"sex"`
+	Birthday    *time.Time `gorm:"<-:create;comment:Birthday" json:"birthday,omitempty"`
+	UserType    int        `gorm:"size:8;comment:User type" json:"userType"`
+	Enabled     bool       `gorm:"comment:Is enabled" json:"enabled"`
+	Remark      string     `gorm:"size:1024;comment:Remarks" json:"remark"`
 }
 
 func (TestTableUserUnique) TableName() string {
@@ -176,7 +176,7 @@ func TestMergeCreateUnique(t *testing.T) {
 			if strings.Contains(err.Error(), "ORA-00001") {
 				t.Log(err) // ORA-00001: unique constraint violated
 				var gotData []TestTableUserUnique
-				tx = db.Where(map[string]any{"uid": []string{"U1", "U2"}}).Find(&gotData)
+				tx = db.Where(`"UID" IN (?)`, []string{"U1", "U2"}).Find(&gotData)
 				if err = tx.Error; err != nil {
 					t.Fatal(err)
 				} else {
@@ -197,14 +197,14 @@ func TestMergeCreateUnique(t *testing.T) {
 }
 
 type testModelOra03146TTC struct {
-	Id          int64     `gorm:"primaryKey;autoIncrement:false;column:SL_ID;type:uint;size:20;default:0;comment:id" json:"SL_ID"`
-	ApiName     string    `gorm:"column:SL_API_NAME;type:VARCHAR2;size:100;default:null;comment:Interface Name" json:"SL_API_NAME"`
-	RawReceive  string    `gorm:"column:SL_RAW_RECEIVE_JSON;type:VARCHAR2;size:4000;default:null;comment:Original request parameters" json:"SL_RAW_RECEIVE_JSON"`
-	RawSend     string    `gorm:"column:SL_RAW_SEND_JSON;type:VARCHAR2;size:4000;default:null;comment:Original response parameters" json:"SL_RAW_SEND_JSON"`
-	DealReceive string    `gorm:"column:SL_DEAL_RECEIVE_JSON;type:VARCHAR2;size:4000;default:null;comment:Processing request parameters" json:"SL_DEAL_RECEIVE_JSON"`
-	DealSend    string    `gorm:"column:SL_DEAL_SEND_JSON;type:VARCHAR2;size:4000;default:null;comment:Handle response parameters" json:"SL_DEAL_SEND_JSON"`
-	Code        string    `gorm:"column:SL_CODE;type:VARCHAR2;size:16;default:null;comment:HTTP status" json:"SL_CODE"`
-	CreatedTime time.Time `gorm:"column:SL_CREATED_TIME;type:date;default:null;comment:Creation time" json:"SL_CREATED_TIME"`
+	Id          int64     `gorm:"primaryKey;autoIncrement:false;type:uint;size:20;default:0;comment:id" json:"SL_ID"`
+	ApiName     string    `gorm:"type:VARCHAR2;size:100;default:null;comment:Interface Name" json:"SL_API_NAME"`
+	RawReceive  string    `gorm:"type:VARCHAR2;size:4000;default:null;comment:Original request parameters" json:"SL_RAW_RECEIVE_JSON"`
+	RawSend     string    `gorm:"type:VARCHAR2;size:4000;default:null;comment:Original response parameters" json:"SL_RAW_SEND_JSON"`
+	DealReceive string    `gorm:"type:VARCHAR2;size:4000;default:null;comment:Processing request parameters" json:"SL_DEAL_RECEIVE_JSON"`
+	DealSend    string    `gorm:"type:VARCHAR2;size:4000;default:null;comment:Handle response parameters" json:"SL_DEAL_SEND_JSON"`
+	Code        string    `gorm:"type:VARCHAR2;size:16;default:null;comment:HTTP status" json:"SL_CODE"`
+	CreatedTime time.Time `gorm:"type:date;default:null;comment:Creation time" json:"SL_CREATED_TIME"`
 }
 
 func TestOra03146TTC(t *testing.T) {
@@ -248,22 +248,22 @@ func TestOra03146TTC(t *testing.T) {
 }
 
 type testNoDefaultDBValues struct {
-	UID  string `gorm:"column:uid;type:varchar(50);comment:User identity" json:"uid"`
-	Name string `gorm:"column:name;size:50;comment:User name" json:"name"`
+	UID  string `gorm:"type:varchar2;size:50;comment:User identity" json:"uid"`
+	Name string `gorm:"size:50;comment:User name" json:"name"`
 
-	Account  string `gorm:"column:account;type:varchar(50);comment:Login account" json:"account"`
-	Password string `gorm:"column:password;type:varchar(512);comment:Login password (encrypted)" json:"password"`
+	Account  string `gorm:"type:varchar2;size:50;comment:Login account" json:"account"`
+	Password string `gorm:"type:varchar2;size:512;comment:Login password (encrypted)" json:"password"`
 
-	Email       string `gorm:"column:email;type:varchar(128);comment:Email address" json:"email"`
-	PhoneNumber string `gorm:"column:phone_number;type:varchar(15);comment:E.164" json:"phoneNumber"`
+	Email       string `gorm:"type:varchar2;size:128;comment:Email address" json:"email"`
+	PhoneNumber string `gorm:"type:varchar2;size:15;comment:E.164" json:"phoneNumber"`
 
-	Sex      string     `gorm:"column:sex;type:char(1);comment:Gender" json:"sex"`
-	Birthday *time.Time `gorm:"column:birthday;<-:create;comment:Birthday" json:"birthday,omitempty"`
+	Sex      string     `gorm:"type:char;size:1;comment:Gender" json:"sex"`
+	Birthday *time.Time `gorm:"<-:create;comment:Birthday" json:"birthday,omitempty"`
 
-	UserType int `gorm:"column:user_type;size:8;comment:User type" json:"userType"`
+	UserType int `gorm:"size:8;comment:User type" json:"userType"`
 
-	Enabled bool   `gorm:"column:enabled;comment:Is enabled" json:"enabled"`
-	Remark  string `gorm:"column:remark;size:1024;comment:Remarks" json:"remark"`
+	Enabled bool   `gorm:"comment:Is enabled" json:"enabled"`
+	Remark  string `gorm:"size:1024;comment:Remarks" json:"remark"`
 }
 
 func (testNoDefaultDBValues) TableName() string {

@@ -6,8 +6,6 @@ import (
 	"github.com/cmmoran/go-ora/v2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-
-	"github.com/cmmoran/gorm-oracle/callbacks"
 )
 
 func Create(db *gorm.DB) {
@@ -25,7 +23,7 @@ func Create(db *gorm.DB) {
 
 	if stmt.SQL.Len() == 0 {
 		var (
-			createValues            = callbacks.ConvertToCreateValues(stmt)
+			createValues            = ConvertToCreateValues(stmt)
 			onConflict, hasConflict = stmt.Clauses["ON CONFLICT"].Expression.(clause.OnConflict)
 		)
 
@@ -133,7 +131,7 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 					}
 				}
 			}
-			db.Statement.AddVar(db.Statement, convertValue(v, dataType, precision, notnull))
+			db.Statement.AddVar(db.Statement, castValue(v, dataType, precision, notnull))
 			_, _ = db.Statement.WriteString(" AS ")
 			db.Statement.WriteQuoted(column.Name)
 		}
@@ -181,7 +179,7 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 					}
 				}
 			}
-			onConflict.DoUpdates[idx].Value = convertValue(onConflict.DoUpdates[idx].Value, dataType, precision, notnull)
+			onConflict.DoUpdates[idx].Value = castValue(onConflict.DoUpdates[idx].Value, dataType, precision, notnull)
 		}
 		onConflict.DoUpdates.Build(db.Statement)
 	}

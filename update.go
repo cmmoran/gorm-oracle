@@ -78,6 +78,16 @@ func checkMissingWhereConditions(db *gorm.DB) {
 	}
 }
 
+func fieldsForName(s *schema.Schema, dbName ...string) (fields []*schema.Field) {
+	for _, name := range dbName {
+		if field := s.LookUpField(name); field != nil {
+			fields = append(fields, field)
+		}
+	}
+
+	return
+}
+
 // ConvertToAssignments convert to update assignments
 func ConvertToAssignments(stmt *gorm.Statement) (set clause.Set) {
 	var (
@@ -127,13 +137,13 @@ func ConvertToAssignments(stmt *gorm.Statement) (set clause.Set) {
 				if !isZero {
 					_, primaryValues := schema.GetIdentityFieldValuesMap(stmt.Context, stmt.ReflectValue, stmt.Schema.PrimaryFields)
 					column, values := schema.ToQueryValues("", stmt.Schema.PrimaryFieldDBNames, primaryValues)
-					stmt.AddClause(clause.Where{Exprs: []clause.Expression{clause.IN{Column: column, Values: values}}})
+					stmt.AddClause(clause.Where{Exprs: []clause.Expression{clause.IN{Column: column, Values: convertToLiteral(stmt, values, stmt.ReflectValue, fieldsForName(stmt.Schema, stmt.Schema.PrimaryFieldDBNames...)...).([]any)}}})
 				}
 			}
 		case reflect.Struct:
 			for _, field := range stmt.Schema.PrimaryFields {
 				if value, isZero := field.ValueOf(stmt.Context, stmt.ReflectValue); !isZero {
-					stmt.AddClause(clause.Where{Exprs: []clause.Expression{clause.Eq{Column: field.DBName, Value: value}}})
+					stmt.AddClause(clause.Where{Exprs: []clause.Expression{clause.Eq{Column: field.DBName, Value: convertToLiteral(stmt, value, stmt.ReflectValue, field)}}})
 				}
 			}
 		default:
@@ -160,7 +170,7 @@ func ConvertToAssignments(stmt *gorm.Statement) (set clause.Set) {
 				if field := stmt.Schema.LookUpField(k); field != nil {
 					if field.DBName != "" {
 						if v, ok := selectColumns[field.DBName]; (ok && v) || (!ok && !restricted) {
-							set = append(set, clause.Assignment{Column: clause.Column{Name: field.DBName}, Value: kv})
+							set = append(set, clause.Assignment{Column: clause.Column{Name: field.DBName}, Value: convertToLiteral(stmt, kv, stmt.ReflectValue, field)})
 							assignValue(field, value[k])
 						}
 					} else if v, ok := selectColumns[field.Name]; (ok && v) || (!ok && !restricted) {
@@ -190,7 +200,7 @@ func ConvertToAssignments(stmt *gorm.Statement) (set clause.Set) {
 						} else if field.AutoUpdateTime == schema.UnixSecond {
 							set = append(set, clause.Assignment{Column: clause.Column{Name: field.DBName}, Value: now.Unix()})
 						} else {
-							set = append(set, clause.Assignment{Column: clause.Column{Name: field.DBName}, Value: now})
+							set = append(set, clause.Assignment{Column: clause.Column{Name: field.DBName}, Value: convertToLiteral(stmt, now, stmt.ReflectValue, field)})
 						}
 					}
 				}
@@ -230,7 +240,7 @@ func ConvertToAssignments(stmt *gorm.Statement) (set clause.Set) {
 							}
 
 							if (ok || !isZero) && field.Updatable {
-								innerValue = convertValue(innerValue, stmt.DataTypeOf(field), field.Precision, field.NotNull)
+								innerValue = convertToLiteral(stmt, innerValue, updatingValue, field)
 								set = append(set, clause.Assignment{Column: clause.Column{Name: field.DBName}, Value: innerValue})
 								assignField := field
 								if isDiffSchema {
@@ -243,7 +253,7 @@ func ConvertToAssignments(stmt *gorm.Statement) (set clause.Set) {
 						}
 					} else {
 						if innerValue, isZero := field.ValueOf(stmt.Context, updatingValue); !isZero {
-							stmt.AddClause(clause.Where{Exprs: []clause.Expression{clause.Eq{Column: field.DBName, Value: innerValue}}})
+							stmt.AddClause(clause.Where{Exprs: []clause.Expression{clause.Eq{Column: field.DBName, Value: convertToLiteral(stmt, innerValue, updatingValue, field)}}})
 						}
 					}
 				}
