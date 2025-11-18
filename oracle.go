@@ -474,6 +474,32 @@ func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuil
 		if stmt.Schema != nil {
 			for i, ws := range c.Expression.(clause.Where).Exprs {
 				switch wst := ws.(type) {
+				case clause.IN:
+					in := wst // the IN expression in the Exprs list
+					values := in.Values
+					n := len(values)
+
+					if n <= 1000 {
+						continue
+					}
+
+					// rewrite the IN into a chain of OR(IN-chunk)
+					chunks := chunk(values, 1000)
+
+					// build list of OR operands
+					orExprs := make([]clause.Expression, len(chunks))
+					for ci, chk := range chunks {
+						orExprs[ci] = clause.IN{
+							Column: in.Column,
+							Values: chk,
+						}
+					}
+
+					// Replace the IN expression with an OR expression
+					c.Expression.(clause.Where).Exprs[i] = clause.Or(orExprs...)
+
+					// Important: write back the updated Where clause into stmt so the builder sees it
+					stmt.Clauses["WHERE"] = c
 				case clause.Eq:
 					name := ""
 					if ccol, cok := wst.Column.(clause.Column); cok {
@@ -511,6 +537,18 @@ func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuil
 		c.Build(builder)
 	}
 	return
+}
+
+func chunk[T any](in []T, n int) [][]T {
+	var out [][]T
+	for len(in) > n {
+		out = append(out, in[:n])
+		in = in[n:]
+	}
+	if len(in) > 0 {
+		out = append(out, in)
+	}
+	return out
 }
 
 func (d Dialector) getLimitRows(limit clause.Limit) (limitRows int, hasLimit bool) {
