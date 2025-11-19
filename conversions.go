@@ -9,11 +9,98 @@ import (
 	"time"
 
 	"github.com/cmmoran/go-ora/v2"
+	"github.com/cmmoran/go-ora/v2/converters"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/schema"
 )
 
-func convertValue(val any, dataType string, prec int, notnull bool) any {
+var (
+	tyTime   = reflect.TypeFor[time.Time]()
+	ty16Byte = reflect.TypeFor[[16]byte]()
+)
+
+func convertToLiteral(stmt *gorm.Statement, val any, rv reflect.Value, f ...*schema.Field) any {
+	var ret any
+	rval, _, indirections := reflectValueDereference(val)
+	if !rval.IsValid() {
+		return val
+	}
+	v := rval.Interface()
+	switch {
+	case len(f) > 1 && (rval.Kind() == reflect.Slice || rval.Kind() == reflect.Array):
+		ret = make([]any, 0)
+		for i := 0; i < rval.Len(); i++ {
+			v = convertToLiteral(stmt, rval.Index(i).Interface(), rv, f[i])
+			ret = append(ret.([]any), v)
+		}
+		return ret.([]any)
+	case len(f) == 1:
+		field := f[0]
+		switch rval.Type() {
+		case tyTime:
+			loc := stmt.DB.Dialector.(*Dialector).sessionLocation
+			if loc == nil {
+				loc = time.Local
+			}
+			prec := field.Precision
+			if prec <= 0 || prec > 9 {
+				prec = 6
+			}
+
+			vt, ok := v.(time.Time)
+			if !ok {
+				vt = time.Time{}
+			}
+			switch strings.ToLower(string(field.DataType)) {
+			case "date":
+				dr := reflect.ValueOf(converters.ToDate(vt, converters.WithLocation(loc)))
+				for i := 0; i < indirections; i++ {
+					dr, _ = reflectValueReference(dr.Interface(), true)
+				}
+				if err := field.Set(stmt.Context, rv, dr.Interface()); err != nil {
+					return dr.Interface()
+				}
+				return dr.Interface()
+			case "timestamp":
+				dr := reflect.ValueOf(converters.ToTimestamp(vt, converters.WithLocation(loc), converters.WithPrecision(prec)))
+				for i := 0; i < indirections; i++ {
+					dr, _ = reflectValueReference(dr.Interface(), true)
+				}
+				if err := field.Set(stmt.Context, rv, dr.Interface()); err != nil {
+					return dr.Interface()
+				}
+				return dr.Interface()
+			case "timestamp with time zone":
+				vt = trimFracTo(vt, prec)
+				dr := reflect.ValueOf(vt)
+				for i := 0; i < indirections; i++ {
+					dr, _ = reflectValueReference(dr.Interface(), true)
+				}
+				if err := field.Set(stmt.Context, rv, dr.Interface()); err != nil {
+					return dr.Interface()
+				}
+				return dr.Interface()
+			case "timestamp with local time zone":
+				dr := reflect.ValueOf(converters.ToTimestampWithLocalTimeZone(vt, converters.WithLocation(loc), converters.WithPrecision(prec)))
+				for i := 0; i < indirections; i++ {
+					dr, _ = reflectValueReference(dr.Interface(), true)
+				}
+				if err := field.Set(stmt.Context, rv, dr.Interface()); err != nil {
+					return dr.Interface()
+				}
+				return dr.Interface()
+
+			}
+		case ty16Byte:
+			return v.([]byte)[:]
+		}
+	}
+
+	return val
+}
+
+func castValue(val any, dataType string, prec int, notnull bool) any {
 	v, wasPtr := reflectDereference(val)
 	if v == nil && wasPtr {
 		return castNullExpr(dataType)
@@ -54,11 +141,11 @@ func convertValue(val any, dataType string, prec int, notnull bool) any {
 		return sql.NullTime{}
 
 	case time.Time:
-		return convertTime(x, dataType, prec)
+		return castTime(x, dataType, prec)
 
 	default:
 		if reflect.TypeOf(x).ConvertibleTo(ty16Byte) {
-			return convertRaw16(x)
+			return castRaw16(x)
 		}
 		return x
 	}
@@ -83,14 +170,12 @@ func castNullExpr(t string) any {
 	}
 }
 
-func convertTime(t time.Time, typ string, prec int) any {
+func castTime(t time.Time, typ string, prec int) any {
 	switch typ {
 	case "DATE":
 		return clause.Expr{
-			SQL: "CAST(TO_DATE(?, ?) AS DATE)",
-			Vars: []any{
-				t.Format("2006-01-02T15:04:05"),
-				`YYYY-MM-DD"T"HH24:MI:SS`},
+			SQL:  "CAST(TO_DATE(?, ?) AS DATE)",
+			Vars: []any{t.Format("2006-01-02 15:04:05"), converters.NlsDateFormat},
 		}
 	case "TIMESTAMP":
 		if prec > 0 {
@@ -99,7 +184,7 @@ func convertTime(t time.Time, typ string, prec int) any {
 		}
 		return clause.Expr{
 			SQL:  fmt.Sprintf("CAST(TO_TIMESTAMP(?, ?) AS %s)", typ),
-			Vars: []any{t.Format("2006-01-02T15:04:05.999999"), `YYYY-MM-DD"T"HH24:MI:SS.FF6`},
+			Vars: []any{t.Format("2006-01-02 15:04:05.999999999"), converters.NlsTimestampFormat},
 		}
 	case "TIMESTAMP WITH TIME ZONE":
 		if prec > 0 {
@@ -108,7 +193,7 @@ func convertTime(t time.Time, typ string, prec int) any {
 		}
 		return clause.Expr{
 			SQL:  fmt.Sprintf("CAST(TO_TIMESTAMP_TZ(?, ?) AS %s)", typ),
-			Vars: []any{t.Format("2006-01-02T15:04:05.999999-07:00"), `YYYY-MM-DD"T"HH24:MI:SS.FF6TZH:TZM`},
+			Vars: []any{t.Format("2006-01-02 15:04:05.999999999-07:00"), converters.NlsTimestampTzFormat},
 		}
 	case "TIMESTAMP WITH LOCAL TIME ZONE":
 		if prec > 0 {
@@ -117,14 +202,14 @@ func convertTime(t time.Time, typ string, prec int) any {
 		}
 		return clause.Expr{
 			SQL:  fmt.Sprintf("CAST(TO_TIMESTAMP_TZ(?, ?) AS %s)", typ),
-			Vars: []any{t.Format("2006-01-02T15:04:05.999999-07:00"), `YYYY-MM-DD"T"HH24:MI:SS.FF6TZH:TZM`},
+			Vars: []any{t.Format("2006-01-02 15:04:05.999999999-07:00"), converters.NlsTimestampFormat},
 		}
 	default:
 		return t
 	}
 }
 
-func convertRaw16(v any) any {
+func castRaw16(v any) any {
 	b, ok := asRaw16(reflect.ValueOf(v))
 	if !ok {
 		return clause.Expr{SQL: "CAST(NULL AS RAW(16))"}

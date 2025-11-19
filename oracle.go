@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/cmmoran/go-ora/v2"
-	"golang.org/x/exp/slices"
+	"github.com/cmmoran/go-ora/v2/converters"
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
@@ -156,7 +156,13 @@ func reflectDereference(obj any) (any, bool) {
 		return nil, false
 	}
 
-	v := reflect.ValueOf(obj)
+	var (
+		v  reflect.Value
+		ok bool
+	)
+	if v, ok = obj.(reflect.Value); !ok {
+		v = reflect.ValueOf(obj)
+	}
 
 	if !v.IsValid() {
 		return nil, false
@@ -175,12 +181,50 @@ func reflectDereference(obj any) (any, bool) {
 	return v.Interface(), isPtr
 }
 
+func reflectValueDereference(obj any) (reflect.Value, bool, int) {
+	if obj == nil {
+		return reflect.ValueOf(obj), false, 0
+	}
+
+	var (
+		v  reflect.Value
+		ok bool
+	)
+	if v, ok = obj.(reflect.Value); !ok {
+		v = reflect.ValueOf(obj)
+	}
+
+	if !v.IsValid() {
+		return v, false, 0
+	}
+
+	isPtr := false
+	indirections := 0
+	// Unwrap interfaces and pointers
+	for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return v, true, 0
+		}
+		v = v.Elem()
+		isPtr = true
+		indirections++
+	}
+
+	return v, isPtr, indirections
+}
+
 func reflectReference(obj any, wrapPointers ...bool) any {
 	if obj == nil {
 		return nil
 	}
 
-	v := reflect.ValueOf(obj)
+	var (
+		v  reflect.Value
+		ok bool
+	)
+	if v, ok = obj.(reflect.Value); !ok {
+		v = reflect.ValueOf(obj)
+	}
 
 	// Unwrap interfaces
 	for v.Kind() == reflect.Interface && !v.IsNil() {
@@ -200,6 +244,108 @@ func reflectReference(obj any, wrapPointers ...bool) any {
 	ptrVal.Elem().Set(v)
 
 	return ptrVal.Interface()
+}
+
+func reflectReferenceDepth(obj any, depth int) any {
+	if obj == nil {
+		return nil
+	}
+
+	var (
+		v  reflect.Value
+		ok bool
+	)
+	if v, ok = obj.(reflect.Value); !ok {
+		v = reflect.ValueOf(obj)
+	}
+
+	// Unwrap interfaces
+	for v.Kind() == reflect.Interface && !v.IsNil() {
+		v = v.Elem()
+	}
+
+	// Decide whether to wrap pointers or not
+	if v.Kind() == reflect.Ptr {
+		if depth == 0 {
+			return obj // Leave pointer as-is
+		}
+	}
+
+	// Create a new pointer to the value
+	ptrVal := reflect.New(v.Type())
+	ptrVal.Elem().Set(v)
+
+	if depth == 0 {
+		return ptrVal.Interface()
+	}
+	return reflectReferenceDepth(ptrVal.Interface(), depth-1)
+}
+
+func reflectValueReference(obj any, wrapPointers ...bool) (reflect.Value, bool) {
+	if obj == nil {
+		return reflect.ValueOf(obj), false
+	}
+
+	var (
+		v  reflect.Value
+		ok bool
+	)
+	if v, ok = obj.(reflect.Value); !ok {
+		v = reflect.ValueOf(obj)
+	}
+
+	// Unwrap interfaces
+	for v.Kind() == reflect.Interface && !v.IsNil() {
+		v = v.Elem()
+	}
+
+	// Decide whether to wrap pointers or not
+	if v.Kind() == reflect.Ptr {
+		if len(wrapPointers) == 0 || !wrapPointers[0] {
+			return reflect.ValueOf(obj), true // Leave pointer as-is
+		}
+		// wrapPointers[0] is true → wrap pointer again
+	}
+
+	// Create a new pointer to the value
+	ptrVal := reflect.New(v.Type())
+	ptrVal.Elem().Set(v)
+
+	return ptrVal, true
+}
+
+func reflectValueReferenceDepth(obj any, depth int) (reflect.Value, bool) {
+	if obj == nil {
+		return reflect.ValueOf(obj), false
+	}
+	var (
+		v  reflect.Value
+		ok bool
+	)
+	if v, ok = obj.(reflect.Value); !ok {
+		v = reflect.ValueOf(obj)
+	}
+
+	// Unwrap interfaces
+	for v.Kind() == reflect.Interface && !v.IsNil() {
+		v = v.Elem()
+	}
+
+	// Decide whether to wrap pointers or not
+	if v.Kind() == reflect.Ptr {
+		if depth == 0 {
+			return v, true // Leave pointer as-is
+		}
+	}
+
+	// Create a new pointer to the value
+	ptrVal := reflect.New(v.Type())
+	ptrVal.Elem().Set(v)
+
+	if depth == 0 {
+		return ptrVal, true
+	}
+	return reflectValueReferenceDepth(ptrVal, depth-1)
 }
 
 func (d Dialector) DummyTableName() string {
@@ -227,6 +373,7 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 		CreateClauses: []string{"INSERT", "VALUES", "ON CONFLICT", "RETURNING"},
 		UpdateClauses: []string{"UPDATE", "SET", "WHERE", "RETURNING"},
 		DeleteClauses: []string{"DELETE", "FROM", "WHERE", "RETURNING"},
+		QueryClauses:  []string{"SELECT", "FROM", "WHERE", "GROUP BY", "ORDER BY", "LIMIT", "FOR"},
 	}
 	callbacks.RegisterDefaultCallbacks(db, config)
 
@@ -256,11 +403,11 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 	if sqlDB, ok := db.ConnPool.(*sql.DB); ok {
 		_, _ = AddSessionParams(sqlDB, map[string]string{
 			"TIME_ZONE":               loc.String(),
-			"NLS_DATE_FORMAT":         `YYYY-MM-DD"T"HH24:MI:SS`,
-			"NLS_TIMESTAMP_FORMAT":    `YYYY-MM-DD"T"HH24:MI:SS.FF6`,
-			"NLS_TIMESTAMP_TZ_FORMAT": `YYYY-MM-DD"T"HH24:MI:SS.FF6TZH:TZM`,
-			"NLS_TIME_FORMAT":         `HH24:MI:SS.FF6`,
-			"NLS_TIME_TZ_FORMAT":      `HH24:MI:SS.FF6TZH:TZM`,
+			"NLS_DATE_FORMAT":         converters.NlsDateFormat,
+			"NLS_TIMESTAMP_FORMAT":    converters.NlsTimestampFormat,
+			"NLS_TIMESTAMP_TZ_FORMAT": converters.NlsTimestampTzFormat,
+			"NLS_TIME_FORMAT":         converters.NlsTimeFormat,
+			"NLS_TIME_TZ_FORMAT":      converters.NlsTimeTzFormat,
 		})
 	}
 
@@ -274,9 +421,7 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 	dbverSplits := strings.Split(d.DBVer, ".")
 	if dbVer, _ := strconv.Atoi(dbverSplits[0]); dbVer == 12 {
 		if dbMinor, _ := strconv.Atoi(dbverSplits[1]); dbMinor >= 2 {
-			if d.namingStrategy.IdentifierMaxLength == 0 {
-				d.namingStrategy.capIdentifierMaxLength = 128
-			}
+			d.namingStrategy.capIdentifierMaxLength = 128
 		}
 	} else if dbVer > 12 {
 		d.namingStrategy.capIdentifierMaxLength = 128
@@ -290,31 +435,14 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 	if err = db.Callback().Delete().Replace("gorm:delete", Delete); err != nil {
 		return
 	}
+	if err = db.Callback().Query().Replace("gorm:query", Query); err != nil {
+		return
+	}
 
 	for k, v := range d.ClauseBuilders() {
 		db.ClauseBuilders[k] = v
 	}
 	return
-}
-
-func (d Dialector) stableDbNameFields(m *schema.Schema, cols []clause.Column) []*schema.Field {
-	if m == nil {
-		return nil
-	}
-	ordered := make([]*schema.Field, 0, len(m.Fields))
-	for _, f := range m.Fields {
-		if !isReturnableField(f) || !f.Readable {
-			continue
-		}
-		if fld := m.LookUpField(f.Name); fld != nil {
-			if len(cols) == 0 || !slices.ContainsFunc(cols, func(c clause.Column) bool {
-				return c.Name == fld.DBName
-			}) {
-				ordered = append(ordered, fld)
-			}
-		}
-	}
-	return ordered
 }
 
 func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuilder) {
@@ -341,7 +469,86 @@ func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuil
 			c.Build(builder)
 		}
 	}
+	clauseBuilders["WHERE"] = func(c clause.Clause, builder clause.Builder) {
+		stmt, _ := builder.(*gorm.Statement)
+		if stmt.Schema != nil {
+			for i, ws := range c.Expression.(clause.Where).Exprs {
+				switch wst := ws.(type) {
+				case clause.IN:
+					in := wst // the IN expression in the Exprs list
+					values := in.Values
+					n := len(values)
+
+					if n <= 1000 {
+						continue
+					}
+
+					// rewrite the IN into a chain of OR(IN-chunk)
+					chunks := chunk(values, 1000)
+
+					// build list of OR operands
+					orExprs := make([]clause.Expression, len(chunks))
+					for ci, chk := range chunks {
+						orExprs[ci] = clause.IN{
+							Column: in.Column,
+							Values: chk,
+						}
+					}
+
+					// Replace the IN expression with an OR expression
+					c.Expression.(clause.Where).Exprs[i] = clause.Or(orExprs...)
+
+					// Important: write back the updated Where clause into stmt so the builder sees it
+					stmt.Clauses["WHERE"] = c
+				case clause.Eq:
+					name := ""
+					if ccol, cok := wst.Column.(clause.Column); cok {
+						name = ccol.Name
+					} else if scol, sok := wst.Column.(string); sok {
+						name = scol
+					}
+
+					if f := stmt.Schema.LookUpField(name); f != nil {
+						c.Expression.(clause.Where).Exprs[i] = clause.Eq{
+							Column: clause.Column{Table: stmt.Table, Name: f.DBName},
+							Value:  convertToLiteral(stmt, wst.Value, stmt.ReflectValue, f),
+						}
+						stmt.Clauses["WHERE"] = c
+					}
+				case clause.Expr:
+					if strings.Contains(wst.SQL, "=") {
+						sp := strings.Split(wst.SQL, "=")
+						k := sp[0]
+						if name, ok := IsExplicitQuoted(k); ok {
+							k = name
+						}
+						if f := stmt.Schema.LookUpField(k); f != nil {
+							wst.Vars[0] = convertToLiteral(stmt, wst.Vars[0], stmt.ReflectValue, f)
+							c.Expression.(clause.Where).Exprs[i] = clause.Expr{
+								SQL:                wst.SQL,
+								Vars:               wst.Vars,
+								WithoutParentheses: wst.WithoutParentheses,
+							}
+						}
+					}
+				}
+			}
+		}
+		c.Build(builder)
+	}
 	return
+}
+
+func chunk[T any](in []T, n int) [][]T {
+	var out [][]T
+	for len(in) > n {
+		out = append(out, in[:n])
+		in = in[n:]
+	}
+	if len(in) > 0 {
+		out = append(out, in)
+	}
+	return out
 }
 
 func (d Dialector) getLimitRows(limit clause.Limit) (limitRows int, hasLimit bool) {
@@ -532,8 +739,6 @@ func (d Dialector) Explain(sql string, vars ...interface{}) string {
 	return ExplainSQL(sql, numericPlaceholder, `'`, vars...)
 }
 
-var ty16Byte = reflect.TypeOf((*[16]byte)(nil)).Elem()
-
 // Check for types that match ~[16]byte
 func isSixteenByteType(t reflect.Type) bool {
 	for t.Kind() == reflect.Pointer {
@@ -554,8 +759,10 @@ func (d Dialector) DataTypeOf(field *schema.Field) string {
 	switch field.DataType {
 	case schema.Bool:
 		booleanType := "NUMBER(1)"
-		if dbVer, _ := strconv.Atoi(strings.Split(d.DBVer, ".")[0]); dbVer >= 23 {
-			booleanType = "BOOLEAN"
+		if len(d.DBVer) > 0 {
+			if dbVer, _ := strconv.Atoi(strings.Split(d.DBVer, ".")[0]); dbVer >= 23 {
+				booleanType = "BOOLEAN"
+			}
 		}
 		sqlType = booleanType
 	case schema.Int, schema.Uint:
@@ -569,7 +776,7 @@ func (d Dialector) DataTypeOf(field *schema.Field) string {
 		}
 	case schema.Float:
 		sqlType = "FLOAT"
-	case schema.String, "VARCHAR2":
+	case schema.String, "VARCHAR2", "varchar2":
 		size := field.Size
 		defaultSize := d.DefaultStringSize
 
@@ -601,17 +808,33 @@ func (d Dialector) DataTypeOf(field *schema.Field) string {
 			if d.Config.UseClobForTextType {
 				sqlType = "CLOB"
 			} else {
-				sqlType = "VARCHAR2(4000)"
+				if field.Size > 0 {
+					sqlType = fmt.Sprintf("VARCHAR2(%d)", field.Size)
+				} else {
+					sqlType = "VARCHAR2(4000)"
+				}
 			}
 		}
-	case schema.Time:
-		sqlType = "TIMESTAMP WITH TIME ZONE"
+	case schema.Time, "timestamp with time zone":
+		if field.Precision > 0 && field.Precision <= 9 {
+			sqlType = fmt.Sprintf("TIMESTAMP(%d) WITH TIME ZONE", field.Precision)
+		} else {
+			sqlType = "TIMESTAMP WITH TIME ZONE"
+		}
 	case schema.Bytes:
 		sqlType = "BLOB"
 	case "timestamp without time zone":
-		sqlType = "TIMESTAMP WITH LOCAL TIME ZONE"
+		if field.Precision > 0 && field.Precision <= 9 {
+			sqlType = fmt.Sprintf("TIMESTAMP(%d) WITH LOCAL TIME ZONE", field.Precision)
+		} else {
+			sqlType = "TIMESTAMP WITH LOCAL TIME ZONE"
+		}
 	case "timestamp":
-		sqlType = "TIMESTAMP"
+		if field.Precision > 0 && field.Precision <= 9 {
+			sqlType = fmt.Sprintf("TIMESTAMP(%d)", field.Precision)
+		} else {
+			sqlType = "TIMESTAMP"
+		}
 	case "date":
 		sqlType = "DATE"
 	default:
@@ -659,30 +882,4 @@ func (d Dialector) Translate(err error) error {
 		return terr
 	}
 	return err
-}
-
-func toBytesFrom16Array(val interface{}) ([]byte, error) {
-	rv := reflect.ValueOf(val)
-	for rv.Kind() == reflect.Ptr {
-		rv = rv.Elem()
-	}
-	rt := rv.Type()
-
-	// check it’s an Array of length 16
-	if rt.Kind() != reflect.Array || rt.Len() != 16 {
-		return nil, fmt.Errorf("expected array[16], got %s", rt)
-	}
-	// check element kind is uint8
-	if rt.Elem().Kind() != reflect.Uint8 {
-		return nil, fmt.Errorf("expected element kind uint8, got %s", rt.Elem())
-	}
-
-	// build a new slice and copy each element
-	out := make([]byte, 16)
-	for i := 0; i < 16; i++ {
-		// rv.Index(i) gives a reflect.Value of the element
-		// .Uint() returns its numeric (0–255) value
-		out[i] = byte(rv.Index(i).Uint())
-	}
-	return out, nil
 }

@@ -1,4 +1,4 @@
-package callbacks
+package oracle
 
 import (
 	"fmt"
@@ -75,6 +75,8 @@ func ConvertToCreateValues(stmt *gorm.Statement) (values clause.Values) {
 					} else if field.AutoUpdateTime > 0 && updateTrackTime {
 						_ = stmt.AddError(field.Set(stmt.Context, rv, curTime))
 						values.Values[i][idx], _ = field.ValueOf(stmt.Context, rv)
+					} else {
+						values.Values[i][idx] = convertToLiteral(stmt, values.Values[i][idx], rv, field)
 					}
 				}
 
@@ -97,7 +99,8 @@ func ConvertToCreateValues(stmt *gorm.Statement) (values clause.Values) {
 						if vs[idx] == nil {
 							values.Values[idx] = append(values.Values[idx], stmt.DefaultValueOf(field))
 						} else {
-							values.Values[idx] = append(values.Values[idx], vs[idx])
+							vsidx := convertToLiteral(stmt, vs[idx], stmt.ReflectValue, field)
+							values.Values[idx] = append(values.Values[idx], vsidx)
 						}
 					}
 				}
@@ -108,14 +111,17 @@ func ConvertToCreateValues(stmt *gorm.Statement) (values clause.Values) {
 				field := stmt.Schema.FieldsByDBName[column.Name]
 				if values.Values[0][idx], isZero = field.ValueOf(stmt.Context, stmt.ReflectValue); isZero {
 					if field.DefaultValueInterface != nil {
-						values.Values[0][idx] = field.DefaultValueInterface
-						_ = stmt.AddError(field.Set(stmt.Context, stmt.ReflectValue, field.DefaultValueInterface))
+						literal := convertToLiteral(stmt, field.DefaultValueInterface, stmt.ReflectValue, field)
+						values.Values[0][idx] = literal
+						_ = stmt.AddError(field.Set(stmt.Context, stmt.ReflectValue, literal))
 					} else if field.AutoCreateTime > 0 || field.AutoUpdateTime > 0 {
-						_ = stmt.AddError(field.Set(stmt.Context, stmt.ReflectValue, curTime))
+						tcurTime := convertToLiteral(stmt, curTime, stmt.ReflectValue, field)
+						_ = stmt.AddError(field.Set(stmt.Context, stmt.ReflectValue, tcurTime))
 						values.Values[0][idx], _ = field.ValueOf(stmt.Context, stmt.ReflectValue)
 					}
 				} else if field.AutoUpdateTime > 0 && updateTrackTime {
-					_ = stmt.AddError(field.Set(stmt.Context, stmt.ReflectValue, curTime))
+					tcurTime := convertToLiteral(stmt, curTime, stmt.ReflectValue, field)
+					_ = stmt.AddError(field.Set(stmt.Context, stmt.ReflectValue, tcurTime))
 					values.Values[0][idx], _ = field.ValueOf(stmt.Context, stmt.ReflectValue)
 				}
 			}
@@ -124,7 +130,8 @@ func ConvertToCreateValues(stmt *gorm.Statement) (values clause.Values) {
 				if v, ok := selectColumns[field.DBName]; (ok && v) || (!ok && !restricted) && field.DefaultValueInterface == nil {
 					if rvOfvalue, isZero := field.ValueOf(stmt.Context, stmt.ReflectValue); !isZero {
 						values.Columns = append(values.Columns, clause.Column{Name: field.DBName})
-						values.Values[0] = append(values.Values[0], rvOfvalue)
+						trvOfvalue := convertToLiteral(stmt, rvOfvalue, stmt.ReflectValue, field)
+						values.Values[0] = append(values.Values[0], trvOfvalue)
 					}
 				}
 			}
@@ -145,7 +152,8 @@ func ConvertToCreateValues(stmt *gorm.Statement) (values clause.Values) {
 							if !field.PrimaryKey && (!field.HasDefaultValue || field.DefaultValueInterface != nil ||
 								strings.EqualFold(field.DefaultValue, "NULL")) && field.AutoCreateTime == 0 {
 								if field.AutoUpdateTime > 0 {
-									assignment := clause.Assignment{Column: clause.Column{Name: field.DBName}, Value: curTime}
+									tcurTime := convertToLiteral(stmt, curTime, stmt.ReflectValue, field)
+									assignment := clause.Assignment{Column: clause.Column{Name: field.DBName}, Value: tcurTime}
 									switch field.AutoUpdateTime {
 									case schema.UnixNanosecond:
 										assignment.Value = curTime.UnixNano()

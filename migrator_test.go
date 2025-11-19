@@ -98,9 +98,9 @@ func TestMigrator_AutoMigrate(t *testing.T) {
 
 type TestTablePartialIndex struct {
 	gorm.Model
-	Name string `gorm:"column:name;size:50;comment:User Name"`
-	Age  uint8  `gorm:"column:age;size:8;comment:User Age"`
-	Sex  string `gorm:"column:sex;type:char(1);check:chk_there_can_be_only_two,lower(SEX)='m' or lower(SEX)='f';index:uni_there_can_be_only_two,unique,where:lower(sex) in ('m'\\,'f');"`
+	Name string `gorm:"size:50;comment:User Name"`
+	Age  uint8  `gorm:"size:8;comment:User Age"`
+	Sex  string `gorm:"type:char;size:1;check:chk_there_can_be_only_two,lower(SEX)='m' or lower(SEX)='f';index:uni_there_can_be_only_two,unique,where:lower(sex) in ('m'\\,'f');"`
 }
 
 type TestTableCaseSensitive struct {
@@ -114,7 +114,7 @@ func (TestTableCaseSensitive) TableName() string {
 
 type TestTableCaseSensitiveRegular struct {
 	gorm.Model
-	Name string `gorm:"column:name;size:50;comment:User Name"`
+	Name string `gorm:"size:50;comment:User Name"`
 }
 
 func (TestTableCaseSensitiveRegular) TableName() string {
@@ -124,16 +124,16 @@ func (TestTableCaseSensitiveRegular) TableName() string {
 // TestTableUser Test User Information Table Model
 type TestTableUser struct {
 	ID   uint64 `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
-	UID  string `gorm:"type:varchar(50);comment:User Identity" json:"uid"`
+	UID  string `gorm:"type:varchar2;size:50;comment:User Identity" json:"uid"`
 	Name string `gorm:"size:50;comment:User Name" json:"name"`
 
-	Account  string `gorm:"type:varchar(50);comment:Login Account" json:"account"`
-	Password string `gorm:"type:varchar(512);comment:Login Password (Encrypted)" json:"password"`
+	Account  string `gorm:"type:varchar2;size:50;comment:Login Account" json:"account"`
+	Password string `gorm:"type:varchar2;size:512;comment:Login Password (Encrypted)" json:"password"`
 
-	Email       string `gorm:"type:varchar(128);comment:Email Address" json:"email"`
-	PhoneNumber string `gorm:"type:varchar(15);comment:E.164" json:"phoneNumber"`
+	Email       string `gorm:"type:varchar2;size:128;comment:Email Address" json:"email"`
+	PhoneNumber string `gorm:"type:varchar2;size:15;comment:E.164" json:"phoneNumber"`
 
-	Sex      string     `gorm:"type:char(1);comment:Gender" json:"sex"`
+	Sex      string     `gorm:"type:char;size:1;comment:Gender" json:"sex"`
 	Birthday *time.Time `gorm:"<-:create;comment:Birthday" json:"birthday,omitempty"`
 
 	UserType int `gorm:"size:8;comment:User Type" json:"userType"`
@@ -148,23 +148,23 @@ func (TestTableUser) TableName() string {
 }
 
 type TestTableUserNoComments struct {
-	ID   uint64 `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey" json:"id"`
-	UID  string `gorm:"column:name;type:varchar(50)" json:"uid"`
-	Name string `gorm:"column:name;size:50" json:"name"`
+	ID   uint64 `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey" json:"id"`
+	UID  string `gorm:"type:varchar2;size:50" json:"uid"`
+	Name string `gorm:"size:50" json:"name"`
 
-	Account  string `gorm:"column:account;type:varchar(50)" json:"account"`
-	Password string `gorm:"column:password;type:varchar(512)" json:"password"`
+	Account  string `gorm:"type:varchar2;size:50" json:"account"`
+	Password string `gorm:"type:varchar2;size:512" json:"password"`
 
-	Email       string `gorm:"column:email;type:varchar(128)" json:"email"`
-	PhoneNumber string `gorm:"column:phone_number;type:varchar(15)" json:"phoneNumber"`
+	Email       string `gorm:"type:varchar2;size:128" json:"email"`
+	PhoneNumber string `gorm:"type:varchar2;size:15" json:"phoneNumber"`
 
-	Sex      string    `gorm:"column:sex;type:char(1)" json:"sex"`
-	Birthday time.Time `gorm:"column:birthday" json:"birthday"`
+	Sex      string    `gorm:"type:char;size:1" json:"sex"`
+	Birthday time.Time `gorm:"" json:"birthday"`
 
-	UserType int `gorm:"column:user_type;size:8" json:"userType"`
+	UserType int `gorm:"size:8" json:"userType"`
 
-	Enabled bool   `gorm:"column:enabled" json:"enabled"`
-	Remark  string `gorm:"column:remark;size:1024" json:"remark"`
+	Enabled bool   `gorm:"" json:"enabled"`
+	Remark  string `gorm:"size:1024" json:"remark"`
 }
 
 func (TestTableUserNoComments) TableName() string {
@@ -174,7 +174,7 @@ func (TestTableUserNoComments) TableName() string {
 type TestTableUserAddColumn struct {
 	TestTableUser
 
-	AddNewColumn string `gorm:"type:varchar(100);comment:Add New Column"`
+	AddNewColumn string `gorm:"type:varchar2;size:100;comment:Add New Column"`
 }
 
 func (TestTableUserAddColumn) TableName() string {
@@ -184,7 +184,7 @@ func (TestTableUserAddColumn) TableName() string {
 type TestTableUserMigrateColumn struct {
 	TestTableUser
 
-	AddNewColumn       string `gorm:"type:varchar(100);comment:Test Add New Column"`
+	AddNewColumn       string `gorm:"type:varchar2;size:100;comment:Test Add New Column"`
 	CommentSingleQuote string `gorm:"comment:Comments with single quote'[']'"`
 }
 
@@ -193,15 +193,15 @@ func (TestTableUserMigrateColumn) TableName() string {
 }
 
 type testTableColumnTypeModel struct {
-	ID   int64  `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey"`
-	Name string `gorm:"column:name;size:50"`
-	Age  uint8  `gorm:"column:age;size:8"`
+	ID   int64  `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey"`
+	Name string `gorm:"size:50"`
+	Age  uint8  `gorm:"size:8"`
 
-	Avatar []byte `gorm:"column:avatar;"`
+	Avatar []byte `gorm:""`
 
-	Balance float64 `gorm:"column:balance;type:decimal(18, 2)"`
-	Remark  string  `gorm:"column:remark;size:-1"`
-	Enabled bool    `gorm:"column:enabled;"`
+	Balance float64 `gorm:"type:decimal;precision:18;scale:2"`
+	Remark  string  `gorm:"size:-1"`
+	Enabled bool    `gorm:""`
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -247,9 +247,9 @@ func TestMigrator_TableColumnType(t *testing.T) {
 }
 
 type testFieldNameIsReservedWord struct {
-	ID int64 `gorm:"column:id;size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey"`
+	ID int64 `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey"`
 
-	FLOAT float64 `gorm:"type:decimal(18, 2)"`
+	FLOAT float64 `gorm:"type:decimal;precision:18;scale:2"`
 	DESC  string  `gorm:"size:-1"`
 	ON    bool
 
