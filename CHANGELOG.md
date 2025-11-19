@@ -1,3 +1,21 @@
+# [0.4.0](https://github.com/cmmoran/gorm-oracle/compare/v0.3.1...v0.4.0) (2025-11-19)
+
+
+### Bug Fixes
+
+* add schema check in where clause handling for oracle dialect ([9d97650](https://github.com/cmmoran/gorm-oracle/commit/9d976502b3e372805295f47d2be9828b3d74e434))
+* fixing go-ora parameter handling ([de0293f](https://github.com/cmmoran/gorm-oracle/commit/de0293f99621c5bff282c884eee04749346f992e))
+* remove debug print statements from where clause handling ([14aeb49](https://github.com/cmmoran/gorm-oracle/commit/14aeb49024c4a684e295a8bfe81c993c8a3e93d6))
+* replace hardcoded NLS formats with constants ([937c224](https://github.com/cmmoran/gorm-oracle/commit/937c224ae8239e4eaae054c7808f56e76509e754))
+
+
+### Features
+
+* add IN clause chunking for oracle where expressions ([7d39494](https://github.com/cmmoran/gorm-oracle/commit/7d394949a3c88610052732fe31daf6115d8eccec))
+* add query support for oracle dialect and enhance timestamp handling in gorm ([5a22be4](https://github.com/cmmoran/gorm-oracle/commit/5a22be49916606119cd3864a7f590a00c0e190ed))
+
+
+
 ## [0.3.1](https://github.com/cmmoran/gorm-oracle/compare/v0.3.0...v0.3.1) (2025-10-28)
 
 
@@ -31,15 +49,6 @@
 ### Bug Fixes
 
 * streamline Oracle dialect and enhance naming strategy ([c732b22](https://github.com/cmmoran/gorm-oracle/commit/c732b2273d0fadcee07be0f38902fbeeb5c591bc))
-
-
-
-## [0.2.3](https://github.com/cmmoran/gorm-oracle/compare/v0.2.2...v0.2.3) (2025-10-11)
-
-
-### Bug Fixes
-
-* quoted table and column values shoudl now properly work within index, unique, foreign key, and constraints ([54699d3](https://github.com/cmmoran/gorm-oracle/commit/54699d30a310bd71671af0e6ec8b2c527c53e7a8))
 
 
 
