@@ -3,7 +3,7 @@ module github.com/cmmoran/gorm-oracle
 go 1.24.0
 
 require (
-	github.com/cmmoran/go-ora/v2 v2.9.3-0.20251114110950-5fdffd23d023
+	github.com/cmmoran/go-ora/v2 v2.9.4
 	github.com/docker/go-connections v0.6.0
 	github.com/emirpasic/gods/v2 v2.0.0-alpha
 	github.com/gofrs/uuid/v3 v3.1.2
