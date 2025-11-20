@@ -1,3 +1,12 @@
+## [0.4.1](https://github.com/cmmoran/gorm-oracle/compare/v0.4.0...v0.4.1) (2025-11-20)
+
+
+### Bug Fixes
+
+* replaced `instantiateNilPointers` with `ensureInitialized` for cleaner initialization logic for RETURNING clause. ([94166c2](https://github.com/cmmoran/gorm-oracle/commit/94166c2f4dfa7fa7a95a00cfa5899f14399282e9))
+
+
+
 # [0.4.0](https://github.com/cmmoran/gorm-oracle/compare/v0.3.1...v0.4.0) (2025-11-19)
 
 
@@ -40,15 +49,6 @@
 ### Bug Fixes
 
 * removed accidental import of godoes/gorm-oracle ([9158937](https://github.com/cmmoran/gorm-oracle/commit/9158937203e4f954e8bf2429f7b48d37a4c27e31))
-
-
-
-## [0.2.4](https://github.com/cmmoran/gorm-oracle/compare/v0.2.3...v0.2.4) (2025-10-18)
-
-
-### Bug Fixes
-
-* streamline Oracle dialect and enhance naming strategy ([c732b22](https://github.com/cmmoran/gorm-oracle/commit/c732b2273d0fadcee07be0f38902fbeeb5c591bc))
 
 
 
