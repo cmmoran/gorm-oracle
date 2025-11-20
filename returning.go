@@ -2,13 +2,17 @@ package oracle
 
 import (
 	"reflect"
-	"time"
+	"strconv"
+	"strings"
 
 	"github.com/cmmoran/go-ora/v2"
+	regexp "github.com/dlclark/regexp2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/schema"
 )
+
+var stringTypeWithSize = regexp.MustCompile(`(?i)\b(?:varchar2?|nvarchar2|nchar|char)\s*\(\s*(\d+)(?:\s+(?:byte|char))?\s*\)`, regexp.RE2)
 
 func ReturningFieldsWithDefaultDBValue(sch *schema.Schema, values *clause.Values) Returning {
 	if sch == nil {
@@ -112,7 +116,6 @@ func (returning Returning) Build(builder clause.Builder) {
 	}
 
 	rv := stmt.ReflectValue
-	instantiateNilPointers(rv)
 
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		if rv.IsNil() {
@@ -131,9 +134,21 @@ func (returning Returning) Build(builder clause.Builder) {
 		}
 
 		var (
-			val, fbn reflect.Value
-			valVal   any
+			val    reflect.Value
+			valVal any
+			size   = max(1, f.Size)
 		)
+		if f.Size == 0 {
+			dt := f.DataType
+			if match, err := stringTypeWithSize.FindStringMatch(strings.ToLower(string(dt))); err == nil && match != nil {
+				if match.GroupByNumber(1) != nil {
+					size, err = strconv.Atoi(match.GroupByNumber(1).String())
+					if err != nil {
+						size = 128
+					}
+				}
+			}
+		}
 		if isSlice {
 			rows := rv.Len()
 
@@ -142,16 +157,11 @@ func (returning Returning) Build(builder clause.Builder) {
 				for elem.Kind() == reflect.Ptr {
 					elem = elem.Elem()
 				}
-				fbn = elem.FieldByName(f.Name)
 				val = f.ReflectValueOf(stmt.Context, elem)
-				if val.IsValid() && val.CanAddr() {
-					valVal = val.Addr().Interface()
-				} else {
-					valVal = fbn.Interface()
-				}
+				valVal = ensureInitialized(val).Addr().Interface()
 				out := go_ora.Out{
 					Dest: valVal,
-					Size: max(1, f.Size),
+					Size: size,
 				}
 				if returning.vars != nil && len(returning.vars.Values) > j {
 					returning.vars.Values[j] = append(returning.vars.Values[j], out)
@@ -161,22 +171,37 @@ func (returning Returning) Build(builder clause.Builder) {
 				}
 			}
 		} else {
-			fbn = rv.FieldByName(f.Name)
 			val = f.ReflectValueOf(stmt.Context, rv)
-			if val.IsValid() && val.CanAddr() {
-				valVal = val.Addr().Interface()
-			} else {
-				valVal = fbn.Interface()
-			}
+			valVal = ensureInitialized(val).Addr().Interface()
 			out := go_ora.Out{
 				Dest: valVal,
-				Size: max(1, f.Size),
+				Size: size,
 			}
 			if returning.vars != nil && len(returning.vars.Values) > 0 {
 				returning.vars.Values[0] = append(returning.vars.Values[0], out)
 			}
 			builder.AddVar(stmt, out)
 		}
+	}
+}
+
+func ensureInitialized(v reflect.Value) reflect.Value {
+	if !v.IsValid() {
+		return v
+	}
+	switch v.Kind() {
+	case reflect.Ptr:
+		if v.IsNil() {
+			v.Set(reflect.New(v.Type().Elem()))
+		}
+		return v.Elem()
+	case reflect.Slice:
+		if v.IsNil() {
+			v.Set(reflect.MakeSlice(v.Type(), 0, 0))
+		}
+		return v
+	default:
+		return v
 	}
 }
 
@@ -199,68 +224,4 @@ func (returning Returning) MergeClause(clause *clause.Clause) {
 
 func isReturnableField(f *schema.Field) bool {
 	return f != nil && len(f.DBName) > 0 && f.Readable
-}
-
-var skipTypes = map[reflect.Type]struct{}{
-	reflect.TypeOf((*time.Time)(nil)): {},
-}
-
-func instantiateNilPointers(root interface{}) {
-	v := reflect.ValueOf(root)
-	if v.Kind() != reflect.Ptr || v.IsNil() {
-		// must be a non-nil pointer to a struct
-		return
-	}
-	visited := make(map[uintptr]struct{})
-	_instantiateNilPointers(v, visited)
-}
-
-func _instantiateNilPointers(v reflect.Value, visited map[uintptr]struct{}) {
-	// 1) Drill through pointers, but short-circuit on nil or already-seen
-	if v.Kind() == reflect.Ptr {
-		if v.IsNil() {
-			return
-		}
-		addr := v.Pointer()
-		if _, seen := visited[addr]; seen {
-			// we’ve already initialized this struct – avoid a cycle
-			return
-		}
-		visited[addr] = struct{}{}
-		v = v.Elem()
-	}
-
-	// 2) Only structs from here on
-	if v.Kind() != reflect.Struct {
-		return
-	}
-
-	t := v.Type()
-	for i := 0; i < v.NumField(); i++ {
-		field := v.Field(i)
-		sf := t.Field(i)
-
-		// skip unexported
-		if sf.PkgPath != "" {
-			continue
-		}
-
-		switch field.Kind() {
-		case reflect.Ptr:
-			// skip certain pointer types (e.g. time.Time, gorm.DeletedAt, etc.)
-			if _, skip := skipTypes[field.Type()]; skip {
-				continue
-			}
-			if field.IsNil() && field.CanSet() {
-				// allocate the struct it points to
-				field.Set(reflect.New(field.Type().Elem()))
-			}
-			// recurse into it
-			_instantiateNilPointers(field, visited)
-
-		case reflect.Struct:
-			// recurse into embedded structs
-			_instantiateNilPointers(field, visited)
-		}
-	}
 }

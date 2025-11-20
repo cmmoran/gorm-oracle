@@ -844,7 +844,11 @@ func (d Dialector) DataTypeOf(field *schema.Field) string {
 			if d.Config.UseClobForTextType {
 				sqlType = "CLOB"
 			} else {
-				sqlType = "VARCHAR2(4000)"
+				if field.Size > 0 {
+					sqlType = fmt.Sprintf("VARCHAR2(%d)", field.Size)
+				} else {
+					sqlType = "VARCHAR2(4000)"
+				}
 			}
 		}
 
