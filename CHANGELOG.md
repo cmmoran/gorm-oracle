@@ -1,3 +1,12 @@
+## [0.4.2](https://github.com/cmmoran/gorm-oracle/compare/v0.4.1...v0.4.2) (2025-12-01)
+
+
+### Bug Fixes
+
+* adjust column mapping to support custom naming strategies ([5005107](https://github.com/cmmoran/gorm-oracle/commit/50051079d459b3b76f013d9debdc419caa25918a))
+
+
+
 ## [0.4.1](https://github.com/cmmoran/gorm-oracle/compare/v0.4.0...v0.4.1) (2025-11-20)
 
 
@@ -40,15 +49,6 @@
 ### Features
 
 * changed dependency sijms/go-ora to cmmoran/go-ora because it is cumbersome to require go mod replace entries across many dependent projects. ([ac4881d](https://github.com/cmmoran/gorm-oracle/commit/ac4881d4ca59596ec9f64f83efc1a5fef18cca40))
-
-
-
-## [0.2.5](https://github.com/cmmoran/gorm-oracle/compare/v0.2.4...v0.2.5) (2025-10-19)
-
-
-### Bug Fixes
-
-* removed accidental import of godoes/gorm-oracle ([9158937](https://github.com/cmmoran/gorm-oracle/commit/9158937203e4f954e8bf2429f7b48d37a4c27e31))
 
 
 
