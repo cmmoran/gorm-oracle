@@ -59,6 +59,26 @@ func Scan(rows gorm.Rows, db *gorm.DB, mode gorm.ScanMode) {
 				columns[i] = v
 			}
 		}
+	} else {
+		if db.NamingStrategy != nil {
+			// filthy hack to support lowercase `column:name` to map to NAME automatically
+			ns := *(db.NamingStrategy.(*NamingStrategy))
+			sch := db.Statement.Schema
+			if sch != nil {
+				for _, fld := range sch.Fields {
+					if !fld.Readable || fld.DBName == "" {
+						continue
+					}
+					if dbColName := ns.ColumnName("", fld.DBName); dbColName != fld.DBName {
+						for i, column := range columns {
+							if column == dbColName {
+								columns[i] = fld.DBName
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 
 	db.RowsAffected = 0
