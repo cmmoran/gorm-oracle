@@ -321,9 +321,10 @@ func (TestTableTimePtrs) TableName() string {
 }
 
 type TestTableUUID struct {
-	ID   uint64    `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
-	Name string    `gorm:"size:50;comment:User Name" json:"name"`
-	User uuid.UUID `gorm:"type:uuid;comment:User UUID" json:"user"`
+	ID   uint64     `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
+	Name string     `gorm:"size:50;comment:User Name" json:"name"`
+	User uuid.UUID  `gorm:"type:uuid;comment:User UUID" json:"user"`
+	Ref  *uuid.UUID `gorm:"comment:Reference UUID" json:"ref,omitempty"`
 }
 
 func (TestTableUUID) TableName() string {
@@ -341,9 +342,10 @@ func (TestTableULID) TableName() string {
 }
 
 type TestTableGUUID struct {
-	ID   uint64    `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
-	Name string    `gorm:"size:50;comment:User Name" json:"name"`
-	User uuid.UUID `gorm:"comment:User UUID" json:"user"`
+	ID   uint64     `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
+	Name string     `gorm:"size:50;comment:User Name" json:"name"`
+	User uuid.UUID  `gorm:"comment:User UUID" json:"user"`
+	Ref  *uuid.UUID `gorm:"comment:Reference UUID" json:"ref,omitempty"`
 }
 
 func (TestTableGUUID) TableName() string {
@@ -436,7 +438,7 @@ func TestGUUIDType(t *testing.T) {
 	require.EqualValuesf(t, test00.User, test2.User, "expecting User to match")
 
 	test3 := &TestTableGUUID{}
-	result = db.Model(test3).Where(`"USER" = ?`, test00.User).First(test3)
+	result = db.Model(test3).Where(`"USER"`, test00.User).First(test3)
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
 	require.EqualValuesf(t, test00.User, test3.User, "expecting User to match")
@@ -480,7 +482,7 @@ func TestGofrsUUIDType(t *testing.T) {
 	require.EqualValuesf(t, u, test0.User, "expecting User to match")
 
 	test1 := &TestTableGofrsUUID{}
-	result = db.Model(test1).Where(`"USER" = ?`, test00.User).Scan(test1)
+	result = db.Model(test1).Where(`"USER"`, test00.User).Scan(test1)
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
 	require.EqualValuesf(t, test00.User, test1.User, "expecting User to match")
@@ -537,7 +539,7 @@ func TestULIDType(t *testing.T) {
 	require.EqualValuesf(t, u, test0.User, "expecting User to match")
 
 	test1 := &TestTableULID{}
-	result = db.Model(test1).Where(`"USER" = ?`, test00.User).Scan(test1)
+	result = db.Model(test1).Where(`"USER"`, test00.User).Scan(test1)
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValues(t, 1, result.RowsAffected, "expecting 1 row affected")
 	require.EqualValuesf(t, test00.User, test1.User, "expecting User to match")
@@ -730,6 +732,11 @@ func TestReturningIntoUUID(t *testing.T) {
 	result = db.WithContext(currentContext()).Find(model)
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValuesf(t, u, model.User, "expecting model User to be %s", u.String())
+	nuuid := uuid.New()
+	model.Ref = &nuuid
+	result = db.WithContext(currentContext()).Updates(model)
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValuesf(t, nuuid, *model.Ref, "expecting Ref to be %s", nuuid.String())
 }
 
 func TestDeleteReturningIntoUUID(t *testing.T) {

@@ -158,7 +158,7 @@ func (returning Returning) Build(builder clause.Builder) {
 					elem = elem.Elem()
 				}
 				val = f.ReflectValueOf(stmt.Context, elem)
-				valVal = ensureInitialized(val).Addr().Interface()
+				valVal = ensureInitialized(val).Interface()
 				out := go_ora.Out{
 					Dest: valVal,
 					Size: size,
@@ -172,7 +172,7 @@ func (returning Returning) Build(builder clause.Builder) {
 			}
 		} else {
 			val = f.ReflectValueOf(stmt.Context, rv)
-			valVal = ensureInitialized(val).Addr().Interface()
+			valVal = ensureInitialized(val).Interface()
 			out := go_ora.Out{
 				Dest: valVal,
 				Size: size,
@@ -194,13 +194,22 @@ func ensureInitialized(v reflect.Value) reflect.Value {
 		if v.IsNil() {
 			v.Set(reflect.New(v.Type().Elem()))
 		}
-		return v.Elem()
+		if v.CanAddr() {
+			return v.Addr()
+		}
+		return v
 	case reflect.Slice:
 		if v.IsNil() {
 			v.Set(reflect.MakeSlice(v.Type(), 0, 0))
 		}
+		if v.CanAddr() {
+			return v.Addr()
+		}
 		return v
 	default:
+		if v.CanAddr() {
+			return v.Addr()
+		}
 		return v
 	}
 }
