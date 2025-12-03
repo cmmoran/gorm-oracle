@@ -1,3 +1,12 @@
+# [0.5.0](https://github.com/cmmoran/gorm-oracle/compare/v0.4.2...v0.5.0) (2025-12-03)
+
+
+### Features
+
+* add support for nullable reference pointer fields and fix RETURNING initialization logic ([8f476f2](https://github.com/cmmoran/gorm-oracle/commit/8f476f2f001c444f855fb67f0eebc7eed16b36e3))
+
+
+
 ## [0.4.2](https://github.com/cmmoran/gorm-oracle/compare/v0.4.1...v0.4.2) (2025-12-01)
 
 
@@ -40,15 +49,6 @@
 ### Bug Fixes
 
 * fixed an issue where returning could include non-returnable fields ([073e32e](https://github.com/cmmoran/gorm-oracle/commit/073e32e297e25a6e573f468d8cb6a11b2137945e))
-
-
-
-# [0.3.0](https://github.com/cmmoran/gorm-oracle/compare/v0.2.5...v0.3.0) (2025-10-19)
-
-
-### Features
-
-* changed dependency sijms/go-ora to cmmoran/go-ora because it is cumbersome to require go mod replace entries across many dependent projects. ([ac4881d](https://github.com/cmmoran/gorm-oracle/commit/ac4881d4ca59596ec9f64f83efc1a5fef18cca40))
 
 
 
