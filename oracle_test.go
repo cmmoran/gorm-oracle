@@ -398,6 +398,75 @@ func TestCountLimit0(t *testing.T) {
 	}
 }
 
+func TestChunkIn(t *testing.T) {
+	ctx := currentContext()
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+	db = db.WithContext(ctx)
+	_ = db.Migrator().DropTable(&TestTableGUUID{})
+	err := db.Migrator().AutoMigrate(TestTableGUUID{})
+	require.NoError(t, err, "expecting no error")
+
+	maxIds := make([]uuid.UUID, 2050)
+	for i := 0; i < len(maxIds); i++ {
+		maxIds[i] = uuid.New()
+	}
+	test0 := &TestTableGUUID{
+		Name: "test0",
+		User: maxIds[0],
+	}
+	result := db.Create(test0)
+	require.NoError(t, result.Error, "expecting no error creating test0")
+	var finds []TestTableGUUID
+	result = db.Model(&TestTableGUUID{}).Where(`"USER" IN ?`, maxIds).Find(&finds)
+	// Where "USER" IN Expression
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValuesf(t, int64(1), result.RowsAffected, "expecting one record found")
+	require.EqualValuesf(t, maxIds[0], finds[0].User, "expecting ID to match")
+
+	finds = make([]TestTableGUUID, 0)
+	result = db.Model(&TestTableGUUID{}).Where(clause.IN{
+		Column: clause.Column{
+			Name: `USER`,
+		},
+		Values: []any{maxIds},
+	}).Find(&finds)
+	// Where "USER" IN clause
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValuesf(t, int64(1), result.RowsAffected, "expecting one record found")
+	require.EqualValuesf(t, maxIds[0], finds[0].User, "expecting ID to match")
+
+	nmaxIds := maxIds[1:]
+	finds = make([]TestTableGUUID, 0)
+	result = db.Model(&TestTableGUUID{}).Where(`"USER" NOT IN ?`, nmaxIds).Find(&finds)
+	// Where "USER" NOT IN expression
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValuesf(t, int64(1), result.RowsAffected, "expecting one record found")
+	require.EqualValuesf(t, maxIds[0], finds[0].User, "expecting ID to match")
+
+	finds = make([]TestTableGUUID, 0)
+	result = db.Model(&TestTableGUUID{}).Not(`"USER" IN ?`, nmaxIds).Find(&finds)
+	// Not "USER" NOT IN expression
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValuesf(t, int64(1), result.RowsAffected, "expecting one record found")
+	require.EqualValuesf(t, maxIds[0], finds[0].User, "expecting ID to match")
+
+	finds = make([]TestTableGUUID, 0)
+	result = db.Model(&TestTableGUUID{}).Not(clause.IN{
+		Column: clause.Column{
+			Name: `USER`,
+		},
+		Values: []any{nmaxIds},
+	}).Find(&finds)
+	// Not "USER" IN clause
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValuesf(t, int64(1), result.RowsAffected, "expecting one record found")
+	require.EqualValuesf(t, maxIds[0], finds[0].User, "expecting ID to match")
+}
+
 func TestGUUIDType(t *testing.T) {
 	ctx := currentContext()
 	db := dbNamingCase

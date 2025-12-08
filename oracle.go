@@ -469,37 +469,16 @@ func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuil
 			c.Build(builder)
 		}
 	}
+	// must support convertToLiteral for Eq and Expr statements and bindVar length limiting to 1000 or less
 	clauseBuilders["WHERE"] = func(c clause.Clause, builder clause.Builder) {
 		stmt, _ := builder.(*gorm.Statement)
 		if stmt.Schema != nil {
 			for i, ws := range c.Expression.(clause.Where).Exprs {
 				switch wst := ws.(type) {
 				case clause.IN:
-					in := wst // the IN expression in the Exprs list
-					values := in.Values
-					n := len(values)
-
-					if n <= 1000 {
-						continue
+					if newExpr := rewriteINClause(wst, false); newExpr != nil {
+						c.Expression.(clause.Where).Exprs[i] = newExpr
 					}
-
-					// rewrite the IN into a chain of OR(IN-chunk)
-					chunks := chunk(values, 1000)
-
-					// build list of OR operands
-					orExprs := make([]clause.Expression, len(chunks))
-					for ci, chk := range chunks {
-						orExprs[ci] = clause.IN{
-							Column: in.Column,
-							Values: chk,
-						}
-					}
-
-					// Replace the IN expression with an OR expression
-					c.Expression.(clause.Where).Exprs[i] = clause.Or(orExprs...)
-
-					// Important: write back the updated Where clause into stmt so the builder sees it
-					stmt.Clauses["WHERE"] = c
 				case clause.Eq:
 					name := ""
 					if ccol, cok := wst.Column.(clause.Column); cok {
@@ -513,10 +492,18 @@ func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuil
 							Column: clause.Column{Table: stmt.Table, Name: f.DBName},
 							Value:  convertToLiteral(stmt, wst.Value, stmt.ReflectValue, f),
 						}
-						stmt.Clauses["WHERE"] = c
+					}
+				case clause.NotConditions:
+					for j, nc := range wst.Exprs {
+						if ne, ok := nc.(clause.IN); ok {
+							if newExpr := rewriteINClause(ne, true); newExpr != nil {
+								c.Expression.(clause.Where).Exprs[i].(clause.NotConditions).Exprs[j] = newExpr
+							}
+						}
 					}
 				case clause.Expr:
-					if strings.Contains(wst.SQL, "=") {
+					switch {
+					case strings.Contains(wst.SQL, "="):
 						sp := strings.Split(wst.SQL, "=")
 						k := sp[0]
 						if name, ok := IsExplicitQuoted(k); ok {
@@ -530,17 +517,125 @@ func (d Dialector) ClauseBuilders() (clauseBuilders map[string]clause.ClauseBuil
 								WithoutParentheses: wst.WithoutParentheses,
 							}
 						}
+					case isInExpr(wst.SQL):
+						if newExpr := rewriteExprINClause(wst); newExpr != nil {
+							c.Expression.(clause.Where).Exprs[i] = newExpr
+						}
 					}
 				}
 			}
+			stmt.Clauses["WHERE"] = c
 		}
 		c.Build(builder)
 	}
+
 	return
 }
 
-func chunk[T any](in []T, n int) [][]T {
-	var out [][]T
+func rewriteINClause(in clause.IN, negation bool) clause.Expression {
+	// Case 1: single value that is itself a slice (e.g. []uuid.UUID)
+	if len(in.Values) == 1 {
+		if flat, ok := flattenSlice(in.Values[0]); ok {
+			if len(flat) <= 1000 {
+				return clause.IN{
+					Column: in.Column,
+					Values: flat, // flatten to []any
+				}
+			}
+
+			chunks := chunkAny(flat, 1000)
+			orExprs := make([]clause.Expression, len(chunks))
+			for i, chk := range chunks {
+				orExprs[i] = clause.IN{
+					Column: in.Column,
+					Values: chk,
+				}
+			}
+			if negation {
+				return clause.And(orExprs...)
+			}
+			return clause.Or(orExprs...)
+		}
+	}
+
+	// Case 2: flat Values slice already
+	if len(in.Values) <= 1000 {
+		return nil
+	}
+
+	flat := make([]any, len(in.Values))
+	copy(flat, in.Values)
+
+	chunks := chunkAny(flat, 1000)
+	orExprs := make([]clause.Expression, len(chunks))
+	for i, chk := range chunks {
+		orExprs[i] = clause.IN{
+			Column: in.Column,
+			Values: chk,
+		}
+	}
+	return clause.Or(orExprs...)
+}
+
+func rewriteExprINClause(w clause.Expr) clause.Expression {
+	// Only support a single "?" arg
+	if len(w.Vars) != 1 {
+		return nil
+	}
+
+	flat, ok := flattenSlice(w.Vars[0])
+	if !ok {
+		// Not a slice → nothing to rewrite
+		return nil
+	}
+
+	// Always normalize to []any even if small, so typed slices (e.g. []uuid.UUID)
+	// become something the existing bind logic already handles.
+	if len(flat) <= 1000 {
+		return clause.Expr{
+			SQL:                w.SQL,
+			Vars:               []interface{}{flat}, // []any is []interface{}
+			WithoutParentheses: w.WithoutParentheses,
+		}
+	}
+
+	chunks := chunkAny(flat, 1000)
+
+	orExprs := make([]clause.Expression, len(chunks))
+	for i, chk := range chunks {
+		orExprs[i] = clause.Expr{
+			SQL:                w.SQL,
+			Vars:               []interface{}{chk}, // each chunk is []any (i.e. []interface{})
+			WithoutParentheses: w.WithoutParentheses,
+		}
+	}
+
+	return clause.Or(orExprs...)
+}
+
+// Flatten a single value into []any if it's a non-[]byte slice.
+// Returns (nil, false) if v is not a slice (or is []byte).
+func flattenSlice(v interface{}) ([]any, bool) {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return nil, false
+	}
+
+	// Treat []byte specially: it's usually a scalar (RAW/BLOB)
+	if rv.Type().Elem().Kind() == reflect.Uint8 {
+		return nil, false
+	}
+
+	n := rv.Len()
+	out := make([]any, n)
+	for i := 0; i < n; i++ {
+		out[i] = rv.Index(i).Interface()
+	}
+	return out, true
+}
+
+func chunkAny(in []any, n int) [][]any {
+	var out [][]any
 	for len(in) > n {
 		out = append(out, in[:n])
 		in = in[n:]
@@ -549,6 +644,20 @@ func chunk[T any](in []T, n int) [][]T {
 		out = append(out, in)
 	}
 	return out
+}
+
+func isInExpr(sql string) bool {
+	up := strings.ToUpper(sql)
+	up = strings.ReplaceAll(up, "\t", " ")
+	up = strings.Join(strings.Fields(up), " ") // normalize whitespace
+
+	if strings.Contains(up, " NOT IN ?") {
+		return true
+	}
+	if strings.Contains(up, " IN ?") {
+		return true
+	}
+	return false
 }
 
 func (d Dialector) getLimitRows(limit clause.Limit) (limitRows int, hasLimit bool) {
