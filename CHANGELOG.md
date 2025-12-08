@@ -1,3 +1,12 @@
+## [0.5.1](https://github.com/cmmoran/gorm-oracle/compare/v0.5.0...v0.5.1) (2025-12-08)
+
+
+### Bug Fixes
+
+* **chunk:** enhance IN clause handling with chunking and support for negation ([ac59f52](https://github.com/cmmoran/gorm-oracle/commit/ac59f529cf3027d65dc8caa84cdf0ed001609ff8))
+
+
+
 # [0.5.0](https://github.com/cmmoran/gorm-oracle/compare/v0.4.2...v0.5.0) (2025-12-03)
 
 
@@ -40,15 +49,6 @@
 
 * add IN clause chunking for oracle where expressions ([7d39494](https://github.com/cmmoran/gorm-oracle/commit/7d394949a3c88610052732fe31daf6115d8eccec))
 * add query support for oracle dialect and enhance timestamp handling in gorm ([5a22be4](https://github.com/cmmoran/gorm-oracle/commit/5a22be49916606119cd3864a7f590a00c0e190ed))
-
-
-
-## [0.3.1](https://github.com/cmmoran/gorm-oracle/compare/v0.3.0...v0.3.1) (2025-10-28)
-
-
-### Bug Fixes
-
-* fixed an issue where returning could include non-returnable fields ([073e32e](https://github.com/cmmoran/gorm-oracle/commit/073e32e297e25a6e573f468d8cb6a11b2137945e))
 
 
 
