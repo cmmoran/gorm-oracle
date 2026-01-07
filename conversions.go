@@ -184,7 +184,7 @@ func castTime(t time.Time, typ string, prec int) any {
 		}
 		return clause.Expr{
 			SQL:  fmt.Sprintf("CAST(TO_TIMESTAMP(?, ?) AS %s)", typ),
-			Vars: []any{t.Format("2006-01-02 15:04:05.999999999"), converters.NlsTimestampFormat},
+			Vars: []any{t.Format("2006-01-02 15:04:05.999999999Z"), converters.NlsTimestampFormat},
 		}
 	case "TIMESTAMP WITH TIME ZONE":
 		if prec > 0 {
@@ -202,7 +202,7 @@ func castTime(t time.Time, typ string, prec int) any {
 		}
 		return clause.Expr{
 			SQL:  fmt.Sprintf("CAST(TO_TIMESTAMP_TZ(?, ?) AS %s)", typ),
-			Vars: []any{t.Format("2006-01-02 15:04:05.999999999-07:00"), converters.NlsTimestampFormat},
+			Vars: []any{t.Format("2006-01-02 15:04:05.999999999Z"), converters.NlsTimestampFormat},
 		}
 	default:
 		return t
