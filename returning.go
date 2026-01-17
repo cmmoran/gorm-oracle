@@ -1,9 +1,11 @@
 package oracle
 
 import (
+	"database/sql"
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cmmoran/go-ora/v2"
 	regexp "github.com/dlclark/regexp2"
@@ -101,20 +103,6 @@ func (returning Returning) Build(builder clause.Builder) {
 		return
 	}
 
-	// Build RETURNING clause
-	for i, f := range returning.fields {
-		if !isReturnableField(f) {
-			continue
-		}
-		if i > 0 {
-			_ = builder.WriteByte(',')
-		}
-		builder.WriteQuoted(f.DBName)
-	}
-	if len(returning.fields) > 0 {
-		_, _ = builder.WriteString(" INTO ")
-	}
-
 	rv := stmt.ReflectValue
 
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
@@ -125,10 +113,31 @@ func (returning Returning) Build(builder clause.Builder) {
 	}
 	isSlice := rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array
 
-	for i, f := range returning.fields {
+	filteredFields := make([]*schema.Field, 0, len(returning.fields))
+	for _, f := range returning.fields {
 		if !isReturnableField(f) {
 			continue
 		}
+		if !canBindReturningField(stmt, rv, f) {
+			continue
+		}
+		filteredFields = append(filteredFields, f)
+	}
+
+	if len(filteredFields) == 0 {
+		return
+	}
+
+	// Build RETURNING clause
+	for i, f := range filteredFields {
+		if i > 0 {
+			_ = builder.WriteByte(',')
+		}
+		builder.WriteQuoted(f.DBName)
+	}
+	_, _ = builder.WriteString(" INTO ")
+
+	for i, f := range filteredFields {
 		if i > 0 {
 			_, _ = builder.WriteString(", ")
 		}
@@ -136,6 +145,7 @@ func (returning Returning) Build(builder clause.Builder) {
 		var (
 			val    reflect.Value
 			valVal any
+			ok     bool
 			size   = max(1, f.Size)
 		)
 		if f.Size == 0 {
@@ -158,7 +168,10 @@ func (returning Returning) Build(builder clause.Builder) {
 					elem = elem.Elem()
 				}
 				val = f.ReflectValueOf(stmt.Context, elem)
-				valVal = ensureInitialized(val).Interface()
+				valVal, ok = returningDest(val)
+				if !ok {
+					return
+				}
 				out := go_ora.Out{
 					Dest: valVal,
 					Size: size,
@@ -172,7 +185,10 @@ func (returning Returning) Build(builder clause.Builder) {
 			}
 		} else {
 			val = f.ReflectValueOf(stmt.Context, rv)
-			valVal = ensureInitialized(val).Interface()
+			valVal, ok = returningDest(val)
+			if !ok {
+				return
+			}
 			out := go_ora.Out{
 				Dest: valVal,
 				Size: size,
@@ -192,7 +208,11 @@ func ensureInitialized(v reflect.Value) reflect.Value {
 	switch v.Kind() {
 	case reflect.Ptr:
 		if v.IsNil() {
-			v.Set(reflect.New(v.Type().Elem()))
+			if v.CanSet() {
+				v.Set(reflect.New(v.Type().Elem()))
+			} else {
+				return reflect.New(v.Type().Elem())
+			}
 		}
 		if v.CanAddr() {
 			return v.Addr()
@@ -200,17 +220,138 @@ func ensureInitialized(v reflect.Value) reflect.Value {
 		return v
 	case reflect.Slice:
 		if v.IsNil() {
-			v.Set(reflect.MakeSlice(v.Type(), 0, 0))
+			if v.CanSet() {
+				v.Set(reflect.MakeSlice(v.Type(), 0, 0))
+			} else {
+				p := reflect.New(v.Type())
+				p.Elem().Set(reflect.MakeSlice(v.Type(), 0, 0))
+				return p
+			}
 		}
 		if v.CanAddr() {
 			return v.Addr()
 		}
-		return v
+		p := reflect.New(v.Type())
+		p.Elem().Set(v)
+		return p
 	default:
 		if v.CanAddr() {
 			return v.Addr()
 		}
-		return v
+		p := reflect.New(v.Type())
+		p.Elem().Set(v)
+		return p
+	}
+}
+
+var (
+	scannerType = reflect.TypeOf((*sql.Scanner)(nil)).Elem()
+	timeType    = reflect.TypeOf(time.Time{})
+)
+
+func isScalarOutType(t reflect.Type) bool {
+	if t == nil {
+		return false
+	}
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+		if t == nil {
+			return false
+		}
+	}
+	if t == timeType {
+		return true
+	}
+	if t.Implements(scannerType) || reflect.PointerTo(t).Implements(scannerType) {
+		return true
+	}
+	switch t.Kind() {
+	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64, reflect.String, reflect.Interface:
+		return true
+	case reflect.Slice:
+		return t.Elem().Kind() == reflect.Uint8
+	default:
+		return false
+	}
+}
+
+func canBindReturningField(stmt *gorm.Statement, rv reflect.Value, f *schema.Field) bool {
+	if !rv.IsValid() {
+		return false
+	}
+	if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
+		if rv.Len() == 0 {
+			return false
+		}
+		elem := rv.Index(0)
+		for elem.Kind() == reflect.Ptr {
+			if elem.IsNil() {
+				return false
+			}
+			elem = elem.Elem()
+		}
+		val := f.ReflectValueOf(stmt.Context, elem)
+		return canUseReturningDest(val)
+	}
+	val := f.ReflectValueOf(stmt.Context, rv)
+	return canUseReturningDest(val)
+}
+
+func canUseReturningDest(v reflect.Value) bool {
+	if !v.IsValid() {
+		return false
+	}
+	switch v.Kind() {
+	case reflect.Ptr:
+		if v.IsNil() {
+			return v.CanSet()
+		}
+		return true
+	case reflect.Slice:
+		if v.IsNil() {
+			return v.CanSet()
+		}
+		return v.CanAddr()
+	case reflect.Interface:
+		return v.CanAddr()
+	default:
+		return v.CanAddr()
+	}
+}
+
+func returningDest(v reflect.Value) (any, bool) {
+	if !v.IsValid() {
+		return nil, false
+	}
+	switch v.Kind() {
+	case reflect.Ptr:
+		if v.IsNil() {
+			if v.CanSet() {
+				v.Set(reflect.New(v.Type().Elem()))
+			} else {
+				return nil, false
+			}
+		}
+		return v.Interface(), true
+	case reflect.Slice:
+		if v.IsNil() {
+			if v.CanSet() {
+				v.Set(reflect.MakeSlice(v.Type(), 0, 0))
+			} else {
+				return nil, false
+			}
+		}
+		if v.CanAddr() {
+			return v.Addr().Interface(), true
+		}
+		return nil, false
+	default:
+		if v.CanAddr() {
+			return v.Addr().Interface(), true
+		}
+		return nil, false
 	}
 }
 
@@ -232,5 +373,11 @@ func (returning Returning) MergeClause(clause *clause.Clause) {
 }
 
 func isReturnableField(f *schema.Field) bool {
-	return f != nil && len(f.DBName) > 0 && f.Readable
+	if f == nil || len(f.DBName) == 0 || !f.Readable {
+		return false
+	}
+	if f.EmbeddedSchema != nil {
+		return false
+	}
+	return isScalarOutType(f.FieldType)
 }

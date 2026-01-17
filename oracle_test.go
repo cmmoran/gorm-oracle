@@ -62,21 +62,24 @@ func TestMain(m *testing.M) {
 	l := slog.Default()
 	t := &errorF{l: l}
 
+	var (
+		ctx          context.Context
+		oraContainer tc.Container
+	)
 	if _, ok := os.LookupEnv("GORM_NO_DB"); !ok {
 		startOracleDatabase(t)
-		ctx := currentContext()
+		ctx = currentContext()
 		dbNamingCase = setupOracleDatabase(t, ctx, false, true, true)
 		dbIgnoreCase = setupOracleDatabase(t, ctx, true, false, true)
-		defer func() {
-			if _, oraContainer := findDbContextInfo(ctx); oraContainer != nil {
-				_ = oraContainer.Terminate(ctx)
-			}
-		}()
+		_, oraContainer = findDbContextInfo(ctx)
 	}
 
 	// Run tests
 	exitCode := m.Run()
 
+	if oraContainer != nil {
+		_ = oraContainer.Terminate(ctx)
+	}
 	os.Exit(exitCode)
 }
 
@@ -362,6 +365,45 @@ func (TestTableGofrsUUID) TableName() string {
 	return "test_user_uuid"
 }
 
+type TestTableEmbeddedProfile struct {
+	Nickname string `gorm:"size:50;comment:Nickname" json:"nickname"`
+}
+
+type TestTableEmbedded struct {
+	ID   uint64 `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
+	Name string `gorm:"size:50;comment:User Name" json:"name"`
+	TestTableEmbeddedProfile
+}
+
+func (TestTableEmbedded) TableName() string {
+	return "test_user_embedded"
+}
+
+type TestTableNullable struct {
+	ID     uint64         `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
+	Name   sql.NullString `gorm:"size:50;comment:Nullable Name" json:"name"`
+	Note   *string        `gorm:"size:50;comment:Nullable Note" json:"note"`
+	Count  sql.NullInt64  `gorm:"comment:Nullable Count" json:"count"`
+	Active *bool          `gorm:"comment:Nullable Active" json:"active"`
+}
+
+func (TestTableNullable) TableName() string {
+	return "test_user_nullable"
+}
+
+type TestTableDefaultValues struct {
+	ID        uint64 `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey" json:"id"`
+	Name      string `gorm:"size:50" json:"name"`
+	Count     int    `gorm:"default:7" json:"count"`
+	UpdatedAt time.Time
+}
+
+func (TestTableDefaultValues) TableName() string {
+	return "test_user_defaults"
+}
+
+// ==== Query and clause behavior ====
+
 func TestCountLimit0(t *testing.T) {
 	db, err := dbNamingCase, dbErrors[0]
 	if err != nil {
@@ -466,6 +508,8 @@ func TestChunkIn(t *testing.T) {
 	require.EqualValuesf(t, int64(1), result.RowsAffected, "expecting one record found")
 	require.EqualValuesf(t, maxIds[0], finds[0].User, "expecting ID to match")
 }
+
+// ==== UUID/ULID types ====
 
 func TestGUUIDType(t *testing.T) {
 	ctx := currentContext()
@@ -617,6 +661,8 @@ func TestULIDType(t *testing.T) {
 	result = db.Raw(`SELECT * FROM test_user_ulid WHERE "USER" = ?`, test00.User).Scan(test2)
 	require.NoError(t, result.Error, "expecting no error")
 }
+
+// ==== Time types ====
 
 func TestTimeTypes(t *testing.T) {
 	ctx := currentContext()
@@ -778,6 +824,8 @@ func TestTimePtrTypes(t *testing.T) {
 	require.EqualValuesf(t, test0TimestampLTZ, test1.TimestampLTZ, "expecting Date to match")
 }
 
+// ==== RETURNING behavior ====
+
 func TestReturningIntoUUID(t *testing.T) {
 	db := dbNamingCase
 	if db == nil {
@@ -836,6 +884,222 @@ func TestDeleteReturningIntoUUID(t *testing.T) {
 	result = db.Create(model)
 	require.NoError(t, result.Error, "expecting no error")
 	require.EqualValuesf(t, 1, result.RowsAffected, "expecting 1 row affected")
+}
+
+func TestDeleteReturningBehavior(t *testing.T) {
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+
+	t.Run("DefaultNoReturning", func(t *testing.T) {
+		toSQL := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+			model := &TestTableUser{}
+			return tx.Model(model).Where(`id = ?`, 1).Delete(model)
+		})
+		assert.NotContains(t, strings.ToUpper(toSQL), " RETURNING ")
+	})
+
+	t.Run("ExplicitReturning", func(t *testing.T) {
+		toSQL := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+			model := &TestTableUser{}
+			return tx.Model(model).Clauses(clause.Returning{}).Where(`id = ?`, 1).Delete(model)
+		})
+		assert.Contains(t, strings.ToUpper(toSQL), " RETURNING ")
+	})
+}
+
+func TestUpdateReturningBehavior(t *testing.T) {
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+
+	t.Run("DefaultNoReturning", func(t *testing.T) {
+		toSQL := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+			return tx.Model(&TestTableUser{}).Where(`id = ?`, 1).Updates(map[string]any{"name": "alpha"})
+		})
+		assert.NotContains(t, strings.ToUpper(toSQL), " RETURNING ")
+	})
+
+	t.Run("NonAddressableDestStillReturnsWhenModelAddressable", func(t *testing.T) {
+		toSQL := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+			update := TestTableUser{Name: "beta"}
+			return tx.Model(&TestTableUser{}).Clauses(clause.Returning{}).Where(`id = ?`, 1).Updates(update)
+		})
+		assert.Contains(t, strings.ToUpper(toSQL), " RETURNING ")
+	})
+}
+
+func TestUpdateReturningNonAddressableStruct(t *testing.T) {
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+	db = db.WithContext(currentContext())
+
+	_ = db.Migrator().AutoMigrate(TestTableUser{})
+	model := &TestTableUser{
+		UID:         "U2",
+		Name:        "Before",
+		Account:     "before",
+		Password:    "H6aLDNr",
+		PhoneNumber: "+8611111111111",
+		Sex:         "0",
+		UserType:    1,
+		Enabled:     true,
+	}
+	require.NoError(t, db.Create(model).Error, "expecting no error")
+
+	update := TestTableUser{Name: "After"}
+	res := db.Model(&TestTableUser{}).Clauses(clause.Returning{}).Where(`id = ?`, model.ID).Updates(update)
+	require.NoError(t, res.Error, "expecting no error")
+
+	var got TestTableUser
+	require.NoError(t, db.First(&got, model.ID).Error, "expecting no error")
+	assert.Equal(t, "After", got.Name, "expecting Name to be updated")
+}
+
+func TestReturningSkipsEmbeddedFields(t *testing.T) {
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+	db = db.WithContext(currentContext())
+
+	_ = db.Migrator().DropTable(&TestTableEmbedded{})
+	require.NoError(t, db.Migrator().AutoMigrate(TestTableEmbedded{}), "expecting no error")
+
+	model := &TestTableEmbedded{
+		Name: "Alpha",
+		TestTableEmbeddedProfile: TestTableEmbeddedProfile{
+			Nickname: "A1",
+		},
+	}
+	require.NoError(t, db.Create(model).Error, "expecting no error")
+
+	toSQL := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		m := &TestTableEmbedded{
+			ID:   1,
+			Name: "Beta",
+			TestTableEmbeddedProfile: TestTableEmbeddedProfile{
+				Nickname: "B1",
+			},
+		}
+		return tx.Model(m).Clauses(clause.Returning{}).Updates(m)
+	})
+	upperSQL := strings.ToUpper(toSQL)
+	assert.Contains(t, upperSQL, " RETURNING ")
+
+	model.Name = "Beta"
+	model.Nickname = "B1"
+	res := db.Model(model).Clauses(clause.Returning{}).Updates(model)
+	require.NoError(t, res.Error, "expecting no error")
+
+	var got TestTableEmbedded
+	require.NoError(t, db.First(&got, model.ID).Error, "expecting no error")
+	assert.Equal(t, "Beta", got.Name, "expecting Name to be updated")
+	assert.Equal(t, "B1", got.Nickname, "expecting Nickname to be updated")
+}
+
+func TestReturningNullableFields(t *testing.T) {
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+	db = db.WithContext(currentContext())
+
+	_ = db.Migrator().DropTable(&TestTableNullable{})
+	require.NoError(t, db.Migrator().AutoMigrate(TestTableNullable{}), "expecting no error")
+
+	model := &TestTableNullable{
+		Name:   sql.NullString{String: "Alpha", Valid: true},
+		Note:   ptr("note"),
+		Count:  sql.NullInt64{Int64: 5, Valid: true},
+		Active: ptr(true),
+	}
+	require.NoError(t, db.Create(model).Error, "expecting no error")
+
+	res := db.Model(model).Clauses(clause.Returning{}).Updates(map[string]any{
+		"name":   sql.NullString{},
+		"note":   nil,
+		"count":  sql.NullInt64{},
+		"active": nil,
+	})
+	require.NoError(t, res.Error, "expecting no error")
+
+	var got TestTableNullable
+	require.NoError(t, db.First(&got, model.ID).Error, "expecting no error")
+	assert.False(t, got.Name.Valid, "expecting Name to be NULL")
+	assert.Nil(t, got.Note, "expecting Note to be NULL")
+	assert.False(t, got.Count.Valid, "expecting Count to be NULL")
+	assert.Nil(t, got.Active, "expecting Active to be NULL")
+}
+
+func TestCreateReturningDefaultValues(t *testing.T) {
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+	db = db.WithContext(currentContext())
+
+	_ = db.Migrator().DropTable(&TestTableDefaultValues{})
+	require.NoError(t, db.Migrator().AutoMigrate(TestTableDefaultValues{}), "expecting no error")
+
+	model := &TestTableDefaultValues{Name: "Alpha"}
+	require.NoError(t, db.Create(model).Error, "expecting no error")
+	assert.Equal(t, 7, model.Count, "expecting default Count to be returned")
+}
+
+func TestUpdateMapVsStructWithExprAndZeroValues(t *testing.T) {
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+	db = db.WithContext(currentContext())
+
+	_ = db.Migrator().DropTable(&TestTableDefaultValues{})
+	require.NoError(t, db.Migrator().AutoMigrate(TestTableDefaultValues{}), "expecting no error")
+
+	model := &TestTableDefaultValues{Name: "Alpha"}
+	require.NoError(t, db.Create(model).Error, "expecting no error")
+
+	res := db.Model(model).Clauses(clause.Returning{}).Updates(map[string]any{
+		"count": gorm.Expr("count + 1"),
+	})
+	require.NoError(t, res.Error, "expecting no error")
+	assert.Equal(t, 8, model.Count, "expecting Count to be incremented")
+
+	model.Count = 0
+	res = db.Model(model).Clauses(clause.Returning{}).Select("count").Updates(model)
+	require.NoError(t, res.Error, "expecting no error")
+	assert.Equal(t, 0, model.Count, "expecting Count to be set to zero")
+}
+
+func TestMergeCreateNoReturning(t *testing.T) {
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+
+	toSQL := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		m := &TestTableUser{ID: 1, Name: "Alpha"}
+		return tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"name"}),
+		}).Create(m)
+	})
+	upperSQL := strings.ToUpper(toSQL)
+	assert.Contains(t, upperSQL, "MERGE INTO")
+	assert.NotContains(t, upperSQL, " RETURNING ")
 }
 
 func TestPartialIndex(t *testing.T) {
@@ -1031,6 +1295,8 @@ func TestReturning(t *testing.T) {
 func ptr[T any](v T) *T {
 	return &v
 }
+
+// ==== SQL generation and session behavior ====
 
 func TestLimit(t *testing.T) {
 	db, err := dbNamingCase, dbErrors[0]
@@ -1234,17 +1500,19 @@ func (TestTableUserVarcharSize) TableName() string {
 	return "test_user_varchar_size"
 }
 
+// ==== Reflection utilities ====
+
 func Test_reflectDereference(t *testing.T) {
 	type args struct {
 		obj any
 	}
 	x := 5
-	var px *int = &x
+	var px = &x
 	var nilPtr *int
 	var nilIface any = nil
 	var ifaceWithPtr any = px
 	var ifaceWithNilPtr any = nilPtr
-	var nestedPtr **int = &px
+	var nestedPtr = &px
 
 	tests := []struct {
 		name string

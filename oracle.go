@@ -857,7 +857,7 @@ func isSixteenByteType(t reflect.Type) bool {
 }
 
 func (d Dialector) DataTypeOf(field *schema.Field) string {
-	delete(field.TagSettings, "RESTRICT")
+	// Do not mutate TagSettings here; schema.Field can be shared across goroutines.
 
 	// Handle any uuid/ulid as RAW(16)
 	if isSixteenByteType(field.FieldType) {

@@ -43,12 +43,6 @@ func Delete(db *gorm.DB) {
 
 		db.Statement.AddClauseIfNotExists(clause.From{})
 
-		if returning := ReturningWithPrimaryFields(db.Statement.Schema); len(returning.Names) > 0 {
-			db.Statement.AddClause(returning)
-		} else {
-			db.Statement.AddClauseIfNotExists(clause.Returning{})
-		}
-
 		db.Statement.Build(db.Statement.BuildClauses...)
 	}
 
