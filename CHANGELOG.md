@@ -1,3 +1,12 @@
+## [0.5.3](https://github.com/cmmoran/gorm-oracle/compare/v0.5.2...v0.5.3) (2026-01-17)
+
+
+### Bug Fixes
+
+* **oracle:** improve RETURNING clause handling and add test coverage ([57579d7](https://github.com/cmmoran/gorm-oracle/commit/57579d71015ff0f667247a2e59b9f2aa2e81ad8c))
+
+
+
 ## [0.5.2](https://github.com/cmmoran/gorm-oracle/compare/v0.5.1...v0.5.2) (2026-01-07)
 
 
@@ -31,15 +40,6 @@
 ### Bug Fixes
 
 * adjust column mapping to support custom naming strategies ([5005107](https://github.com/cmmoran/gorm-oracle/commit/50051079d459b3b76f013d9debdc419caa25918a))
-
-
-
-## [0.4.1](https://github.com/cmmoran/gorm-oracle/compare/v0.4.0...v0.4.1) (2025-11-20)
-
-
-### Bug Fixes
-
-* replaced `instantiateNilPointers` with `ensureInitialized` for cleaner initialization logic for RETURNING clause. ([94166c2](https://github.com/cmmoran/gorm-oracle/commit/94166c2f4dfa7fa7a95a00cfa5899f14399282e9))
 
 
 
