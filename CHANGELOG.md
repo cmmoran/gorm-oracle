@@ -1,3 +1,12 @@
+# [0.7.0](https://github.com/cmmoran/gorm-oracle/compare/v0.6.0...v0.7.0) (2026-02-23)
+
+
+### Features
+
+* **oracle:** add support for domain indexes with detailed validation and SQL generation ([73d5d45](https://github.com/cmmoran/gorm-oracle/commit/73d5d4575f942d5154a39c05cf89788d169747d7))
+
+
+
 # [0.6.0](https://github.com/cmmoran/gorm-oracle/compare/v0.5.3...v0.6.0) (2026-02-23)
 
 
@@ -31,15 +40,6 @@
 ### Bug Fixes
 
 * **chunk:** enhance IN clause handling with chunking and support for negation ([ac59f52](https://github.com/cmmoran/gorm-oracle/commit/ac59f529cf3027d65dc8caa84cdf0ed001609ff8))
-
-
-
-# [0.5.0](https://github.com/cmmoran/gorm-oracle/compare/v0.4.2...v0.5.0) (2025-12-03)
-
-
-### Features
-
-* add support for nullable reference pointer fields and fix RETURNING initialization logic ([8f476f2](https://github.com/cmmoran/gorm-oracle/commit/8f476f2f001c444f855fb67f0eebc7eed16b36e3))
 
 
 
