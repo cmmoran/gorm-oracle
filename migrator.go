@@ -1102,29 +1102,24 @@ func (m Migrator) CreateIndex(value interface{}, name string) error {
 	ns := getNS(m.DB, m.Dialector)
 	return m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		if idx := stmt.Schema.LookIndex(name); idx != nil {
+			domainCfg, err := parseOracleDomainIndexConfig(idx)
+			if err != nil {
+				return err
+			}
+			if err := validateOracleDomainIndexConfig(idx, domainCfg); err != nil {
+				return err
+			}
+
 			if len(idx.Where) == 0 {
 				opts := m.DB.Migrator().(migrator.BuildIndexOptionsInterface).BuildIndexOptions(idx.Fields, stmt)
 				values := []interface{}{clause.Column{Name: ns.dictCasePart(idx.Name), Raw: true}, m.CurrentTable(stmt), opts}
 
-				createIndexSQL := "CREATE "
-				if idx.Class != "" {
-					createIndexSQL += idx.Class + " "
-				}
-				createIndexSQL += "INDEX ? ON ? ?"
-
-				if idx.Type != "" {
-					createIndexSQL += " USING " + idx.Type
-				}
-
-				if idx.Comment != "" {
-					createIndexSQL += fmt.Sprintf(" COMMENT '%s'", idx.Comment)
-				}
-
-				if idx.Option != "" {
-					createIndexSQL += " " + idx.Option
-				}
+				createIndexSQL := buildCreateIndexSQL(idx, domainCfg)
 
 				return m.DB.Exec(createIndexSQL, values...).Error
+			}
+			if domainCfg.IndexType != "" {
+				return fmt.Errorf("oracle: index %q cannot combine WHERE with oracle_indextype", idx.Name)
 			}
 			// Need to create the SQL for a `CREATE INDEX ? ON (CASE WHEN %s THEN %s END)` taking into account
 			// the fields and the "Where" clause
@@ -1170,6 +1165,171 @@ func (m Migrator) CreateIndex(value interface{}, name string) error {
 		}
 		return nil
 	})
+}
+
+type oracleDomainIndexConfig struct {
+	IndexType  string
+	Parameters string
+}
+
+func buildCreateIndexSQL(idx *schema.Index, domainCfg oracleDomainIndexConfig) string {
+	createIndexSQL := "CREATE "
+	if idx.Class != "" {
+		createIndexSQL += idx.Class + " "
+	}
+	createIndexSQL += "INDEX ? ON ? ?"
+
+	if domainCfg.IndexType != "" {
+		createIndexSQL += " INDEXTYPE IS " + domainCfg.IndexType
+		if domainCfg.Parameters != "" {
+			createIndexSQL += " PARAMETERS (" + domainCfg.Parameters + ")"
+		}
+	} else if idx.Type != "" {
+		createIndexSQL += " USING " + idx.Type
+	}
+
+	if idx.Comment != "" {
+		createIndexSQL += fmt.Sprintf(" COMMENT '%s'", idx.Comment)
+	}
+
+	if idx.Option != "" {
+		createIndexSQL += " " + idx.Option
+	}
+
+	return createIndexSQL
+}
+
+func validateOracleDomainIndexConfig(idx *schema.Index, domainCfg oracleDomainIndexConfig) error {
+	if domainCfg.IndexType == "" {
+		if domainCfg.Parameters != "" {
+			return fmt.Errorf("oracle: index %q has oracle_parameters but missing oracle_indextype", idx.Name)
+		}
+		return nil
+	}
+
+	if domainCfg.Parameters != "" && !isSingleQuoted(domainCfg.Parameters) {
+		return fmt.Errorf("oracle: index %q oracle_parameters must be single-quoted, got %q (example: 'SYNC (ON COMMIT)')", idx.Name, domainCfg.Parameters)
+	}
+
+	if strings.EqualFold(strings.TrimSpace(idx.Class), "UNIQUE") {
+		return fmt.Errorf("oracle: index %q cannot be UNIQUE when oracle_indextype is set", idx.Name)
+	}
+
+	if strings.TrimSpace(idx.Type) != "" {
+		return fmt.Errorf("oracle: index %q cannot use both type=%q and oracle_indextype=%q", idx.Name, idx.Type, domainCfg.IndexType)
+	}
+
+	return nil
+}
+
+func parseOracleDomainIndexConfig(idx *schema.Index) (oracleDomainIndexConfig, error) {
+	cfg := oracleDomainIndexConfig{}
+	if idx == nil {
+		return cfg, nil
+	}
+
+	for _, indexField := range idx.Fields {
+		if indexField.Field == nil {
+			continue
+		}
+		field := indexField.Field
+
+		if err := mergeOracleDomainIndexConfig(&cfg, field.TagSettings["ORACLE_INDEXTYPE"], field.TagSettings["ORACLE_PARAMETERS"], idx.Name, field.Name); err != nil {
+			return cfg, err
+		}
+
+		tag := field.Tag.Get("gorm")
+		if strings.TrimSpace(tag) == "" {
+			continue
+		}
+
+		indexDeclCount := countIndexDeclarationsInTag(tag)
+		for _, token := range strings.Split(tag, ";") {
+			parts := strings.Split(token, ":")
+			if len(parts) == 0 {
+				continue
+			}
+			key := strings.ToUpper(strings.TrimSpace(parts[0]))
+			if key != "INDEX" && key != "UNIQUEINDEX" {
+				continue
+			}
+
+			raw := ""
+			if len(parts) > 1 {
+				raw = strings.TrimSpace(strings.Join(parts[1:], ":"))
+			}
+			if raw == "" {
+				continue
+			}
+
+			declaredName := raw
+			settingsPart := ""
+			if splitAt := strings.IndexByte(raw, ','); splitAt >= 0 {
+				declaredName = raw[:splitAt]
+				settingsPart = raw[splitAt+1:]
+			}
+			declaredName = strings.TrimSpace(declaredName)
+
+			// If a field has multiple unnamed index declarations, there isn't enough information here
+			// to safely map options to this specific schema index.
+			if declaredName == "" && indexDeclCount > 1 {
+				continue
+			}
+			if declaredName != "" && declaredName != idx.Name {
+				continue
+			}
+
+			settings := schema.ParseTagSetting(settingsPart, ",")
+			if err := mergeOracleDomainIndexConfig(&cfg, settings["ORACLE_INDEXTYPE"], settings["ORACLE_PARAMETERS"], idx.Name, field.Name); err != nil {
+				return cfg, err
+			}
+		}
+	}
+
+	return cfg, nil
+}
+
+func mergeOracleDomainIndexConfig(cfg *oracleDomainIndexConfig, indexType, parameters, indexName, fieldName string) error {
+	indexType = strings.TrimSpace(indexType)
+	parameters = strings.TrimSpace(parameters)
+
+	if indexType != "" {
+		if cfg.IndexType == "" {
+			cfg.IndexType = indexType
+		} else if cfg.IndexType != indexType {
+			return fmt.Errorf("oracle: index %q has conflicting oracle_indextype values (%q vs %q) on field %q", indexName, cfg.IndexType, indexType, fieldName)
+		}
+	}
+
+	if parameters != "" {
+		if cfg.Parameters == "" {
+			cfg.Parameters = parameters
+		} else if cfg.Parameters != parameters {
+			return fmt.Errorf("oracle: index %q has conflicting oracle_parameters values (%q vs %q) on field %q", indexName, cfg.Parameters, parameters, fieldName)
+		}
+	}
+
+	return nil
+}
+
+func countIndexDeclarationsInTag(tag string) int {
+	count := 0
+	for _, token := range strings.Split(tag, ";") {
+		parts := strings.Split(token, ":")
+		if len(parts) == 0 {
+			continue
+		}
+		key := strings.ToUpper(strings.TrimSpace(parts[0]))
+		if key == "INDEX" || key == "UNIQUEINDEX" {
+			count++
+		}
+	}
+	return count
+}
+
+func isSingleQuoted(v string) bool {
+	v = strings.TrimSpace(v)
+	return len(v) >= 2 && strings.HasPrefix(v, "'") && strings.HasSuffix(v, "'")
 }
 
 // BuildIndexOptions builds the per-column list for CREATE INDEX on Oracle.
