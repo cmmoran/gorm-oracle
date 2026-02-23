@@ -1,3 +1,12 @@
+# [0.6.0](https://github.com/cmmoran/gorm-oracle/compare/v0.5.3...v0.6.0) (2026-02-23)
+
+
+### Features
+
+* **oracle:** add MERGE-based upsert support with conflict handling improvements ([6382d85](https://github.com/cmmoran/gorm-oracle/commit/6382d85afc95c70b7a49cffddf22d203b07f13af))
+
+
+
 ## [0.5.3](https://github.com/cmmoran/gorm-oracle/compare/v0.5.2...v0.5.3) (2026-01-17)
 
 
@@ -31,15 +40,6 @@
 ### Features
 
 * add support for nullable reference pointer fields and fix RETURNING initialization logic ([8f476f2](https://github.com/cmmoran/gorm-oracle/commit/8f476f2f001c444f855fb67f0eebc7eed16b36e3))
-
-
-
-## [0.4.2](https://github.com/cmmoran/gorm-oracle/compare/v0.4.1...v0.4.2) (2025-12-01)
-
-
-### Bug Fixes
-
-* adjust column mapping to support custom naming strategies ([5005107](https://github.com/cmmoran/gorm-oracle/commit/50051079d459b3b76f013d9debdc419caa25918a))
 
 
 
