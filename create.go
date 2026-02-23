@@ -1,11 +1,14 @@
 package oracle
 
 import (
+	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/cmmoran/go-ora/v2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/schema"
 )
 
 func Create(db *gorm.DB) {
@@ -28,19 +31,26 @@ func Create(db *gorm.DB) {
 		)
 
 		if hasConflict {
-			if stmtSchema != nil && len(stmtSchema.PrimaryFields) > 0 {
-				columnsMap := map[string]bool{}
+			if len(onConflict.TargetWhere.Exprs) > 0 {
+				_ = db.AddError(fmt.Errorf("oracle: OnConflict.TargetWhere is unsupported in MERGE path due to semantic ambiguity"))
+				return
+			}
+
+			conflictDBNames := getMergeMatchDBNames(stmtSchema, onConflict)
+			if len(conflictDBNames) == 0 {
+				hasConflict = false
+			} else {
+				createColumnsMap := map[string]bool{}
 				for _, column := range createValues.Columns {
-					columnsMap[column.Name] = true
+					createColumnsMap[strings.ToUpper(column.Name)] = true
 				}
 
-				for _, field := range stmtSchema.PrimaryFields {
-					if _, ok := columnsMap[field.DBName]; !ok {
+				for _, dbName := range conflictDBNames {
+					if _, ok := createColumnsMap[strings.ToUpper(dbName)]; !ok {
 						hasConflict = false
+						break
 					}
 				}
-			} else {
-				hasConflict = false
 			}
 		}
 
@@ -87,6 +97,10 @@ func Create(db *gorm.DB) {
 
 func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values) {
 	dummyTable := getDummyTable(db)
+	var prioritizedPrimaryField *schema.Field
+	if db.Statement.Schema != nil {
+		prioritizedPrimaryField = db.Statement.Schema.PrioritizedPrimaryField
+	}
 
 	_, _ = db.Statement.WriteString("MERGE INTO ")
 	db.Statement.WriteQuoted(db.Statement.Table)
@@ -144,10 +158,10 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 	_, _ = db.Statement.WriteString(" ON (")
 
 	var where clause.Where
-	for _, field := range db.Statement.Schema.PrimaryFields {
+	for _, dbName := range getMergeMatchDBNames(db.Statement.Schema, onConflict) {
 		where.Exprs = append(where.Exprs, clause.Eq{
-			Column: clause.Column{Table: db.Statement.Table, Name: field.DBName},
-			Value:  clause.Column{Table: "excluded", Name: field.DBName},
+			Column: clause.Column{Table: db.Statement.Table, Name: dbName},
+			Value:  clause.Column{Table: "excluded", Name: dbName},
 		})
 	}
 	where.Build(db.Statement)
@@ -182,13 +196,17 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 			onConflict.DoUpdates[idx].Value = castValue(onConflict.DoUpdates[idx].Value, dataType, precision, notnull)
 		}
 		onConflict.DoUpdates.Build(db.Statement)
+		if len(onConflict.Where.Exprs) > 0 {
+			_, _ = db.Statement.WriteString(" WHERE ")
+			onConflict.Where.Build(db.Statement)
+		}
 	}
 
 	_, _ = db.Statement.WriteString(" WHEN NOT MATCHED THEN INSERT (")
 
 	written := false
 	for _, column := range values.Columns {
-		if db.Statement.Schema.PrioritizedPrimaryField == nil || !db.Statement.Schema.PrioritizedPrimaryField.AutoIncrement || db.Statement.Schema.PrioritizedPrimaryField.DBName != column.Name {
+		if prioritizedPrimaryField == nil || !prioritizedPrimaryField.AutoIncrement || prioritizedPrimaryField.DBName != column.Name {
 			if written {
 				_ = db.Statement.WriteByte(',')
 			}
@@ -201,7 +219,7 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 
 	written = false
 	for _, column := range values.Columns {
-		if db.Statement.Schema.PrioritizedPrimaryField == nil || !db.Statement.Schema.PrioritizedPrimaryField.AutoIncrement || db.Statement.Schema.PrioritizedPrimaryField.DBName != column.Name {
+		if prioritizedPrimaryField == nil || !prioritizedPrimaryField.AutoIncrement || prioritizedPrimaryField.DBName != column.Name {
 			if written {
 				_ = db.Statement.WriteByte(',')
 			}
@@ -224,6 +242,32 @@ func getDummyTable(db *gorm.DB) (dummyTable string) {
 		dummyTable = "DUAL"
 	}
 	return
+}
+
+func getMergeMatchDBNames(stmtSchema *schema.Schema, onConflict clause.OnConflict) []string {
+	if len(onConflict.Columns) > 0 {
+		dbNames := make([]string, 0, len(onConflict.Columns))
+		for _, column := range onConflict.Columns {
+			dbName := column.Name
+			if stmtSchema != nil {
+				if field := stmtSchema.LookUpField(dbName); field != nil {
+					dbName = field.DBName
+				}
+			}
+			dbNames = append(dbNames, dbName)
+		}
+		return dbNames
+	}
+
+	if stmtSchema == nil || len(stmtSchema.PrimaryFields) == 0 {
+		return nil
+	}
+
+	dbNames := make([]string, 0, len(stmtSchema.PrimaryFields))
+	for _, field := range stmtSchema.PrimaryFields {
+		dbNames = append(dbNames, field.DBName)
+	}
+	return dbNames
 }
 
 func getDefaultValues(db *gorm.DB, idx int) {

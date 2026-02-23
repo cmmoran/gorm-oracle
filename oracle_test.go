@@ -1102,6 +1102,188 @@ func TestMergeCreateNoReturning(t *testing.T) {
 	assert.NotContains(t, upperSQL, " RETURNING ")
 }
 
+func TestMergeCreateMatchedUpdateWhere(t *testing.T) {
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+
+	toSQL := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		m := &TestTableUser{ID: 1, Name: "Alpha"}
+		return tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"name"}),
+			Where: clause.Where{
+				Exprs: []clause.Expression{
+					clause.Expr{SQL: `"excluded"."NAME" <> "test_user"."NAME"`},
+				},
+			},
+		}).Create(m)
+	})
+
+	upperSQL := strings.ToUpper(toSQL)
+	assert.Contains(t, upperSQL, "MERGE INTO")
+	assert.Contains(t, upperSQL, "WHEN MATCHED THEN UPDATE")
+	assert.Contains(t, upperSQL, " WHEN MATCHED THEN UPDATE SET ")
+	assert.Contains(t, upperSQL, " WHERE ")
+
+	updateIdx := strings.Index(upperSQL, " WHEN MATCHED THEN UPDATE SET ")
+	whereIdx := strings.Index(upperSQL, " WHERE ")
+	notMatchedIdx := strings.Index(upperSQL, " WHEN NOT MATCHED THEN INSERT ")
+	assert.NotEqual(t, -1, updateIdx, "expected matched update section")
+	assert.NotEqual(t, -1, whereIdx, "expected matched-update WHERE section")
+	assert.NotEqual(t, -1, notMatchedIdx, "expected not matched insert section")
+	assert.Greater(t, whereIdx, updateIdx, "expected WHERE after matched update SET")
+	assert.Less(t, whereIdx, notMatchedIdx, "expected WHERE before not matched insert")
+}
+
+func TestMergeCreateWithoutMatchedUpdateWhereLegacy(t *testing.T) {
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+
+	toSQL := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		m := &TestTableUser{ID: 1, Name: "Alpha"}
+		return tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"name"}),
+		}).Create(m)
+	})
+
+	upperSQL := strings.ToUpper(toSQL)
+	assert.Contains(t, upperSQL, "MERGE INTO")
+	assert.Contains(t, upperSQL, "WHEN MATCHED THEN UPDATE")
+
+	updateIdx := strings.Index(upperSQL, " WHEN MATCHED THEN UPDATE SET ")
+	notMatchedIdx := strings.Index(upperSQL, " WHEN NOT MATCHED THEN INSERT ")
+	assert.NotEqual(t, -1, updateIdx, "expected matched update section")
+	assert.NotEqual(t, -1, notMatchedIdx, "expected not matched insert section")
+
+	matchedSection := upperSQL[updateIdx:notMatchedIdx]
+	assert.NotContains(t, matchedSection, " WHERE ", "matched update section should not contain WHERE when onConflict.Where is empty")
+}
+
+func TestMergeCreateOnUsesConflictColumns(t *testing.T) {
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+
+	toSQL := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		m := &TestTableUserUnique{UID: "U1", Name: "Alpha"}
+		return tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "uid"}},
+			DoUpdates: clause.AssignmentColumns([]string{"name"}),
+		}).Create(m)
+	})
+
+	upperSQL := strings.ToUpper(toSQL)
+	onIdx := strings.Index(upperSQL, " ON (")
+	matchedIdx := strings.Index(upperSQL, " WHEN MATCHED THEN UPDATE ")
+	assert.NotEqual(t, -1, onIdx, "expected MERGE ON section")
+	assert.NotEqual(t, -1, matchedIdx, "expected matched section")
+	onSection := upperSQL[onIdx:matchedIdx]
+
+	assert.Contains(t, upperSQL, "MERGE INTO")
+	assert.Contains(t, onSection, `TEST_USER_UNIQUE."UID" = EXCLUDED."UID"`)
+	assert.NotContains(t, onSection, `TEST_USER_UNIQUE.ID = EXCLUDED.ID`)
+}
+
+func TestMergeCreateOnUsesPrimaryKeyWhenConflictColumnsMissing(t *testing.T) {
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+
+	toSQL := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		m := &TestTableUser{ID: 1, Name: "Alpha"}
+		return tx.Clauses(clause.OnConflict{
+			DoUpdates: clause.AssignmentColumns([]string{"name"}),
+		}).Create(m)
+	})
+
+	upperSQL := strings.ToUpper(toSQL)
+	onIdx := strings.Index(upperSQL, " ON (")
+	matchedIdx := strings.Index(upperSQL, " WHEN MATCHED THEN UPDATE ")
+	assert.NotEqual(t, -1, onIdx, "expected MERGE ON section")
+	assert.NotEqual(t, -1, matchedIdx, "expected matched section")
+	onSection := upperSQL[onIdx:matchedIdx]
+
+	assert.Contains(t, upperSQL, "MERGE INTO")
+	assert.Contains(t, onSection, `TEST_USER.ID = EXCLUDED.ID`)
+}
+
+func TestMergeCreateTargetWhereRejected(t *testing.T) {
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+
+	res := db.Session(&gorm.Session{DryRun: true}).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "uid"}},
+		TargetWhere: clause.Where{
+			Exprs: []clause.Expression{
+				clause.Expr{SQL: `"test_user_unique"."ENABLED" = 1`},
+			},
+		},
+		DoUpdates: clause.AssignmentColumns([]string{"name"}),
+	}).Create(&TestTableUserUnique{UID: "U1", Name: "Alpha", Enabled: true})
+
+	require.Error(t, res.Error, "expected TargetWhere to be rejected in Oracle MERGE path")
+	assert.Contains(t, res.Error.Error(), "unsupported in MERGE path", "expected clear unsupported message")
+}
+
+func TestMergeCreateTargetWhereRejectedWhenMergeGatedOff(t *testing.T) {
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+
+	// UID is the explicit conflict target; Select("name") omits it and would
+	// previously disable MERGE, silently falling back to INSERT.
+	res := db.Session(&gorm.Session{DryRun: true}).Select("name").Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "uid"}},
+		TargetWhere: clause.Where{
+			Exprs: []clause.Expression{
+				clause.Expr{SQL: `"test_user_unique"."ENABLED" = 1`},
+			},
+		},
+		DoUpdates: clause.AssignmentColumns([]string{"name"}),
+	}).Create(&TestTableUserUnique{Name: "Alpha"})
+
+	require.Error(t, res.Error, "expected TargetWhere to be rejected even if MERGE eligibility is not met")
+	assert.Contains(t, res.Error.Error(), "unsupported in MERGE path", "expected clear unsupported message")
+}
+
+func TestMergeCreateMapUpsertNoSchemaPanic(t *testing.T) {
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+
+	toSQL := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		return tx.Table("test_user_unique").Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "uid"}},
+			DoUpdates: clause.Assignments(map[string]any{"name": "Beta"}),
+		}).Create(map[string]any{
+			"uid":  "U1",
+			"name": "Alpha",
+		})
+	})
+
+	upperSQL := strings.ToUpper(toSQL)
+	assert.Contains(t, upperSQL, "MERGE INTO")
+	assert.Contains(t, upperSQL, "WHEN MATCHED THEN UPDATE")
+}
+
 func TestPartialIndex(t *testing.T) {
 	db := dbNamingCase
 

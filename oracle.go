@@ -962,7 +962,8 @@ func (d Dialector) DataTypeOf(field *schema.Field) string {
 		}
 
 		if sqlType == "" {
-			panic(fmt.Sprintf("invalid sql type %s (%s) for oracle", field.FieldType.Name(), field.FieldType.String()))
+			// Fallback to a safe generic type rather than panic at runtime.
+			sqlType = "VARCHAR2(4000)"
 		}
 	}
 
@@ -989,8 +990,17 @@ func (d Dialector) Translate(err error) error {
 			terr = e.Unwrap()
 		}
 		if e, ok := err.(interface{ Unwrap() []error }); ok {
-			terrs := e.Unwrap()[1:]
-			terr = errors.Join(terrs...)
+			uw := e.Unwrap()
+			switch len(uw) {
+			case 0:
+			case 1:
+				terr = uw[0]
+			default:
+				terr = errors.Join(uw[1:]...)
+			}
+		}
+		if terr == nil {
+			return err
 		}
 		return terr
 	}

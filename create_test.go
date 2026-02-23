@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm/clause"
 )
 
 func TestMergeCreate(t *testing.T) {
@@ -194,6 +196,62 @@ func TestMergeCreateUnique(t *testing.T) {
 		dataJsonBytes, _ := json.MarshalIndent(data, "", "  ")
 		t.Logf("result: %s", dataJsonBytes)
 	})
+}
+
+func TestMergeCreateOnConflictColumnsExecution(t *testing.T) {
+	db, err := dbNamingCase, dbErrors[0]
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+
+	model := TestTableUserUnique{}
+	_ = db.Migrator().DropTable(model)
+	require.NoError(t, db.Migrator().AutoMigrate(model), "expecting no error")
+
+	base := &TestTableUserUnique{
+		UID:     "U1",
+		Name:    "Alpha",
+		Enabled: true,
+	}
+	require.NoError(t, db.Create(base).Error, "expecting no error inserting base row")
+
+	upsertUpdate := &TestTableUserUnique{
+		UID:     "U1",
+		Name:    "Beta",
+		Enabled: true,
+	}
+	require.NoError(t, db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "uid"}},
+		DoUpdates: clause.AssignmentColumns([]string{"name"}),
+	}).Create(upsertUpdate).Error, "expecting no error on non-PK upsert")
+
+	var rows []TestTableUserUnique
+	require.NoError(t, db.Where(`"UID" = ?`, "U1").Find(&rows).Error, "expecting no error querying rows")
+	require.Len(t, rows, 1, "expected upsert to update existing row rather than insert duplicate")
+	assert.Equal(t, "Beta", rows[0].Name, "expected name to be updated")
+
+	upsertNoUpdate := &TestTableUserUnique{
+		UID:     "U1",
+		Name:    "Gamma",
+		Enabled: true,
+	}
+	require.NoError(t, db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "uid"}},
+		DoUpdates: clause.AssignmentColumns([]string{"name"}),
+		Where: clause.Where{
+			Exprs: []clause.Expression{
+				clause.Expr{SQL: "1 = 0"},
+			},
+		},
+	}).Create(upsertNoUpdate).Error, "expecting no error on upsert with matched-update predicate")
+
+	var got TestTableUserUnique
+	require.NoError(t, db.Where(`"UID" = ?`, "U1").First(&got).Error, "expecting no error loading row")
+	assert.Equal(t, "Beta", got.Name, "expected matched-update WHERE to prevent update")
 }
 
 type testModelOra03146TTC struct {

@@ -86,6 +86,13 @@ func main() {
 
 ## Questions
 
+## Upsert Semantics
+
+- `Clauses(clause.OnConflict{...}).Create(...)` uses Oracle `MERGE` when the configured conflict target columns are present in the insert payload.
+- `OnConflict.Where` is mapped to `WHEN MATCHED THEN UPDATE ... WHERE ...` (matched-row update predicate).
+- `OnConflict.TargetWhere` is intentionally unsupported in the Oracle `MERGE` path and returns:
+  `oracle: OnConflict.TargetWhere is unsupported in MERGE path due to semantic ambiguity`
+
 <!--suppress HtmlDeprecatedAttribute -->
 <details>
 <summary>ORA-01000: maximum open cursors exceeded</summary>
