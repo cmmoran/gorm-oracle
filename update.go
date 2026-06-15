@@ -240,8 +240,8 @@ func ConvertToAssignments(stmt *gorm.Statement) (set clause.Set) {
 							}
 
 							if (ok || !isZero) && field.Updatable {
-								innerValue = convertToLiteral(stmt, innerValue, updatingValue, field)
-								set = append(set, clause.Assignment{Column: clause.Column{Name: field.DBName}, Value: innerValue})
+								assignmentValue := convertToLiteral(stmt, innerValue, updatingValue, field)
+								set = append(set, clause.Assignment{Column: clause.Column{Name: field.DBName}, Value: assignmentValue})
 								assignField := field
 								if isDiffSchema {
 									if originField := stmt.Schema.LookUpField(dbName); originField != nil {
