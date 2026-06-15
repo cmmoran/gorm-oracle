@@ -1,3 +1,12 @@
+## [0.7.1](https://github.com/cmmoran/gorm-oracle/compare/v0.7.0...v0.7.1) (2026-06-15)
+
+
+### Bug Fixes
+
+* preserve update model values during conversion ([d3da982](https://github.com/cmmoran/gorm-oracle/commit/d3da982f58d30ca27ad23d385d3f468f51b2928e))
+
+
+
 # [0.7.0](https://github.com/cmmoran/gorm-oracle/compare/v0.6.0...v0.7.0) (2026-02-23)
 
 
@@ -31,15 +40,6 @@
 ### Bug Fixes
 
 * **conversions:** fixed an issue where the wrong time format string was used for converting TIMESTAMP and TIMESTAMP WITH LOCAL TIMEZONE ([2d8fbc0](https://github.com/cmmoran/gorm-oracle/commit/2d8fbc09affab57560c09efa10a27502e073b3d9))
-
-
-
-## [0.5.1](https://github.com/cmmoran/gorm-oracle/compare/v0.5.0...v0.5.1) (2025-12-08)
-
-
-### Bug Fixes
-
-* **chunk:** enhance IN clause handling with chunking and support for negation ([ac59f52](https://github.com/cmmoran/gorm-oracle/commit/ac59f529cf3027d65dc8caa84cdf0ed001609ff8))
 
 
 
