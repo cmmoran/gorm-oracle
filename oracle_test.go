@@ -355,6 +355,15 @@ func (TestTableGUUID) TableName() string {
 	return "test_user_uuid"
 }
 
+type TestTableGUUIDPrimary struct {
+	ID   uuid.UUID `gorm:"primaryKey;comment:User UUID" json:"id"`
+	Name string    `gorm:"size:50;comment:User Name" json:"name"`
+}
+
+func (TestTableGUUIDPrimary) TableName() string {
+	return "test_user_uuid_primary"
+}
+
 type TestTableGofrsUUID struct {
 	ID   uint64     `gorm:"size:64;not null;autoIncrement:true;autoIncrementIncrement:1;primaryKey;comment:Auto Increment ID" json:"id"`
 	Name string     `gorm:"size:50;comment:User Name" json:"name"`
@@ -385,6 +394,8 @@ type TestTableNullable struct {
 	Note   *string        `gorm:"size:50;comment:Nullable Note" json:"note"`
 	Count  sql.NullInt64  `gorm:"comment:Nullable Count" json:"count"`
 	Active *bool          `gorm:"comment:Nullable Active" json:"active"`
+	Ref    *uuid.UUID     `gorm:"comment:Nullable UUID" json:"ref"`
+	Event  *time.Time     `gorm:"type:timestamp;comment:Nullable Event" json:"event"`
 }
 
 func (TestTableNullable) TableName() string {
@@ -561,6 +572,138 @@ func TestGUUIDType(t *testing.T) {
 	require.NoError(t, result.Error, "expecting no error")
 	require.Equal(t, result.RowsAffected, int64(1))
 	require.EqualValuesf(t, test00, test4, "expecting User to match")
+}
+
+func TestGUUIDTypePluck(t *testing.T) {
+	ctx := currentContext()
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+	db = db.WithContext(ctx)
+	_ = db.Migrator().DropTable(&TestTableGUUID{})
+	err := db.Migrator().AutoMigrate(TestTableGUUID{})
+	require.NoError(t, err, "expecting no error")
+
+	test0 := &TestTableGUUID{
+		Name: "test0",
+		User: uuid.New(),
+	}
+	test1 := &TestTableGUUID{
+		Name: "test1",
+		User: uuid.New(),
+	}
+	result := db.Create([]*TestTableGUUID{test0, test1})
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValues(t, int64(2), result.RowsAffected, "expecting two records created")
+
+	var finds []TestTableGUUID
+	result = db.Order("ID").Find(&finds)
+	require.NoError(t, result.Error, "expecting no error")
+	require.Len(t, finds, 2)
+	require.EqualValues(t, test0.User, finds[0].User)
+	require.EqualValues(t, test1.User, finds[1].User)
+
+	var users []uuid.UUID
+	result = db.Model(&TestTableGUUID{}).Order("ID").Pluck("USER", &users)
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValues(t, []uuid.UUID{test0.User, test1.User}, users)
+}
+
+func TestGUUIDPrimaryTypePluckWithAlias(t *testing.T) {
+	ctx := currentContext()
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+	db = db.WithContext(ctx)
+	_ = db.Migrator().DropTable(&TestTableGUUIDPrimary{})
+	err := db.Migrator().AutoMigrate(TestTableGUUIDPrimary{})
+	require.NoError(t, err, "expecting no error")
+
+	test0 := &TestTableGUUIDPrimary{
+		ID:   uuid.New(),
+		Name: "test0",
+	}
+	test1 := &TestTableGUUIDPrimary{
+		ID:   uuid.New(),
+		Name: "test1",
+	}
+	result := db.Create([]*TestTableGUUIDPrimary{test0, test1})
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValues(t, int64(2), result.RowsAffected, "expecting two records created")
+
+	var finds []TestTableGUUIDPrimary
+	result = db.Table("test_user_uuid_primary participant_uuid").Order("participant_uuid.name").Find(&finds)
+	require.NoError(t, result.Error, "expecting no error")
+	require.Len(t, finds, 2)
+	require.EqualValues(t, test0.ID, finds[0].ID)
+	require.EqualValues(t, test1.ID, finds[1].ID)
+
+	var ids []uuid.UUID
+	result = db.Table("test_user_uuid_primary participant_uuid").Order("participant_uuid.name").Pluck("participant_uuid.id", &ids)
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValues(t, []uuid.UUID{test0.ID, test1.ID}, ids)
+}
+
+func TestGUUIDPrimaryTypeCountSelectedIDWithAlias(t *testing.T) {
+	ctx := currentContext()
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+	db = db.WithContext(ctx)
+	_ = db.Migrator().DropTable(&TestTableGUUIDPrimary{})
+	err := db.Migrator().AutoMigrate(TestTableGUUIDPrimary{})
+	require.NoError(t, err, "expecting no error")
+
+	result := db.Create([]*TestTableGUUIDPrimary{
+		{ID: uuid.New(), Name: "test0"},
+		{ID: uuid.New(), Name: "test1"},
+	})
+	require.NoError(t, result.Error, "expecting no error")
+
+	base := db.Table("test_user_uuid_primary participant_uuid").Select("participant_uuid.id")
+	var total int64
+	result = base.Session(&gorm.Session{}).Count(&total)
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValues(t, 2, total)
+}
+
+func TestGUUIDPrimaryTypePluckWithAliasManyRows(t *testing.T) {
+	ctx := currentContext()
+	db := dbNamingCase
+	if db == nil {
+		t.Log("db is nil!")
+		return
+	}
+	db = db.WithContext(ctx)
+	_ = db.Migrator().DropTable(&TestTableGUUIDPrimary{})
+	err := db.Migrator().AutoMigrate(TestTableGUUIDPrimary{})
+	require.NoError(t, err, "expecting no error")
+
+	const rowCount = 2500
+	records := make([]*TestTableGUUIDPrimary, 0, rowCount)
+	want := make([]uuid.UUID, 0, rowCount)
+	for i := 0; i < rowCount; i++ {
+		id := uuid.New()
+		want = append(want, id)
+		records = append(records, &TestTableGUUIDPrimary{
+			ID:   id,
+			Name: fmt.Sprintf("test%04d", i),
+		})
+	}
+	result := db.CreateInBatches(records, 200)
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValues(t, int64(rowCount), result.RowsAffected, "expecting records created")
+
+	var ids []uuid.UUID
+	result = db.Table("test_user_uuid_primary participant_uuid").Order("participant_uuid.name").Pluck("participant_uuid.id", &ids)
+	require.NoError(t, result.Error, "expecting no error")
+	require.EqualValues(t, want, ids)
 }
 
 func TestGofrsUUIDType(t *testing.T) {
@@ -1022,6 +1165,8 @@ func TestReturningNullableFields(t *testing.T) {
 		Note:   ptr("note"),
 		Count:  sql.NullInt64{Int64: 5, Valid: true},
 		Active: ptr(true),
+		Ref:    ptr(uuid.New()),
+		Event:  ptr(db.NowFunc()),
 	}
 	require.NoError(t, db.Create(model).Error, "expecting no error")
 
@@ -1030,8 +1175,14 @@ func TestReturningNullableFields(t *testing.T) {
 		"note":   nil,
 		"count":  sql.NullInt64{},
 		"active": nil,
+		"ref":    nil,
+		"event":  nil,
 	})
 	require.NoError(t, res.Error, "expecting no error")
+	assert.Nil(t, model.Note, "expecting model Note to be NULL")
+	assert.Nil(t, model.Active, "expecting model Active to be NULL")
+	assert.Nil(t, model.Ref, "expecting model Ref to be NULL")
+	assert.Nil(t, model.Event, "expecting model Event to be NULL")
 
 	var got TestTableNullable
 	require.NoError(t, db.First(&got, model.ID).Error, "expecting no error")
@@ -1039,6 +1190,20 @@ func TestReturningNullableFields(t *testing.T) {
 	assert.Nil(t, got.Note, "expecting Note to be NULL")
 	assert.False(t, got.Count.Valid, "expecting Count to be NULL")
 	assert.Nil(t, got.Active, "expecting Active to be NULL")
+	assert.Nil(t, got.Ref, "expecting Ref to be NULL")
+	assert.Nil(t, got.Event, "expecting Event to be NULL")
+
+	nextRef := uuid.New()
+	nextEvent := db.NowFunc()
+	res = db.Model(model).Clauses(clause.Returning{}).Updates(map[string]any{
+		"ref":   nextRef,
+		"event": nextEvent,
+	})
+	require.NoError(t, res.Error, "expecting no error")
+	require.NotNil(t, model.Ref, "expecting model Ref to be allocated")
+	assert.Equal(t, nextRef, *model.Ref, "expecting model Ref to match returned UUID")
+	require.NotNil(t, model.Event, "expecting model Event to be allocated")
+	assert.Equal(t, nextEvent.Format("2006-01-02 15:04:05"), model.Event.Format("2006-01-02 15:04:05"), "expecting model Event to match returned timestamp")
 }
 
 func TestCreateReturningDefaultValues(t *testing.T) {
@@ -1748,6 +1913,44 @@ func Test_reflectDereference(t *testing.T) {
 			assert.Equalf(t, tt.want, v, "reflectDereference(%v)", tt.args.obj)
 		})
 	}
+}
+
+func Test_returningDest_UUIDUsesDriverTypedDestination(t *testing.T) {
+	id := uuid.New()
+	idValue := reflect.ValueOf(&id).Elem()
+	dest, ok := returningDest(idValue)
+	require.True(t, ok)
+	idDest, ok := dest.(*uuid.UUID)
+	require.True(t, ok)
+	require.Same(t, &id, idDest)
+
+	var ptr *uuid.UUID
+	ptrValue := reflect.ValueOf(&ptr).Elem()
+	dest, ok = returningDest(ptrValue)
+	require.True(t, ok)
+	ptrDest, ok := dest.(**uuid.UUID)
+	require.True(t, ok)
+	require.Nil(t, ptr)
+
+	next := uuid.New()
+	*ptrDest = &next
+	require.NotNil(t, ptr)
+	require.Equal(t, next, *ptr)
+}
+
+func Test_returningDest_NilPointerUsesPointerToPointer(t *testing.T) {
+	var tm *time.Time
+	tmValue := reflect.ValueOf(&tm).Elem()
+	dest, ok := returningDest(tmValue)
+	require.True(t, ok)
+	tmDest, ok := dest.(**time.Time)
+	require.True(t, ok)
+	require.Nil(t, tm)
+
+	now := time.Date(2026, 6, 15, 12, 30, 0, 0, time.UTC)
+	*tmDest = &now
+	require.NotNil(t, tm)
+	require.Equal(t, now, *tm)
 }
 
 func Test_reflectReference(t *testing.T) {

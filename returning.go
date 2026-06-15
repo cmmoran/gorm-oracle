@@ -327,12 +327,11 @@ func returningDest(v reflect.Value) (any, bool) {
 	}
 	switch v.Kind() {
 	case reflect.Ptr:
+		if v.CanSet() {
+			return v.Addr().Interface(), true
+		}
 		if v.IsNil() {
-			if v.CanSet() {
-				v.Set(reflect.New(v.Type().Elem()))
-			} else {
-				return nil, false
-			}
+			return nil, false
 		}
 		return v.Interface(), true
 	case reflect.Slice:
