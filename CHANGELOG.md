@@ -1,3 +1,12 @@
+## [0.7.2](https://github.com/cmmoran/gorm-oracle/compare/v0.7.1...v0.7.2) (2026-06-15)
+
+
+### Bug Fixes
+
+* **returning:** preserve nullable pointer outputs ([983491e](https://github.com/cmmoran/gorm-oracle/commit/983491e0723d06fc2eaf5f6a2798d3012ff6c08c))
+
+
+
 ## [0.7.1](https://github.com/cmmoran/gorm-oracle/compare/v0.7.0...v0.7.1) (2026-06-15)
 
 
@@ -31,15 +40,6 @@
 ### Bug Fixes
 
 * **oracle:** improve RETURNING clause handling and add test coverage ([57579d7](https://github.com/cmmoran/gorm-oracle/commit/57579d71015ff0f667247a2e59b9f2aa2e81ad8c))
-
-
-
-## [0.5.2](https://github.com/cmmoran/gorm-oracle/compare/v0.5.1...v0.5.2) (2026-01-07)
-
-
-### Bug Fixes
-
-* **conversions:** fixed an issue where the wrong time format string was used for converting TIMESTAMP and TIMESTAMP WITH LOCAL TIMEZONE ([2d8fbc0](https://github.com/cmmoran/gorm-oracle/commit/2d8fbc09affab57560c09efa10a27502e073b3d9))
 
 
 
